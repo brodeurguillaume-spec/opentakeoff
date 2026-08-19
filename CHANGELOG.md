@@ -2,6 +2,13 @@
 
 All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 
+## Unreleased — GRUMP loopback bridge
+
+### Added
+- **An opt-in parent-frame bridge can land an MCP takeoff without the file menu.** When the canvas is embedded by a loopback GRUMP shell with `?grumpBridge=1`, it accepts a versioned `takeoff.proposed` event, runs the existing schema gate and operator-wins merge, and returns a correlated `canvas.takeoff.applied` or rejection fact. The ordinary standalone app never enables the listener.
+- **Human review now crosses that optional bridge as facts, not clicks.** Accept, undo of Accept, edits, deletes, scale confirmation, and human scale changes publish session/revision-aware events. The existing command layer, review gate, undo stack, autosave, and Drive behavior remain authoritative.
+- **GRUMP can review one persisted proposal without accepting every pending shape.** A journaled accept/reject command enters the existing review/delete command layer and returns the ordinary shape fact. Selecting a proposal card is transient: its shapes receive a thick matching outline without changing condition colours or takeoff data.
+
 ## 2026-08-17 — a refusal names its stage; the ship doctrine names what actually ships; opentakeoff-mcp 0.9.52
 
 ### Fixed

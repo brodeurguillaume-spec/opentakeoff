@@ -777,6 +777,18 @@ The same engine speaks [MCP](https://modelcontextprotocol.io), one command away:
 MCP client gets **40 tools** plus browsable sheet resources, over the very same measuring engine,
 with the same scale gate and the same provenance receipts:
 
+When OpenTakeoff is opened inside the optional local **GRUMP** shell, the shell can deliver the
+same native takeoff payload directly instead of asking you to choose a JSON file. Nothing bypasses
+the desk: imported machine shapes remain dashed and pending, the agent-set scale still needs your
+confirmation, and Accept, `⌘Z`, correction, and deletion remain normal Canvas commands. The shell
+receives the resulting facts so its chat can resume from what you actually decided. The bridge is
+disabled in a normal standalone tab and carries no AI key into the browser.
+
+GRUMP's proposal list can accept or reject one persisted task while other proposals remain pending.
+Clicking a proposal card is only a visual focus: the corresponding Canvas outline becomes thicker
+in the card's accent colour. A normal left-click back in the plan clears that focus and the active
+card. Neither action accepts, edits, recolours, or otherwise changes the takeoff.
+
 | Group | Tools |
 |---|---|
 | Open & orient | `load_plan` · `sheet_info` · `sheet_context` · `read_sheet_text` · `find_text` · `view_sheet` |

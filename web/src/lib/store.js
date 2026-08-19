@@ -497,4 +497,15 @@ export function projectIdFromUrl() {
   }
 }
 
+// Loopback-only launchers can give the anonymous browser store a stable local
+// project scope without opting into Google Drive. This id is not a credential;
+// it only namespaces the IndexedDB annotations blob for one local project.
+export function localProjectIdFromUrl() {
+  try {
+    return new URLSearchParams(window.location.search).get("localProject") || "";
+  } catch {
+    return "";
+  }
+}
+
 export { ANN_SCHEMA };

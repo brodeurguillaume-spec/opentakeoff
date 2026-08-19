@@ -7,7 +7,12 @@ import "./styles/print.css";   // OT-only print block — kept out of app.css so
 import TakeoffCanvas from "./pages/TakeoffCanvas.jsx";
 import ProjectHome from "./components/ProjectHome.jsx";
 import { GoogleAuthProvider, useGoogleAuth } from "./lib/google/AuthContext.jsx";
-import { projectIdFromUrl, setActiveStore } from "./lib/store.js";
+import { createLocalStore, localProjectIdFromUrl, projectIdFromUrl, setActiveStore } from "./lib/store.js";
+import {
+  createGrumpProjectStore,
+  grumpProjectApiBaseFromUrl,
+  grumpProjectIdFromUrl,
+} from "./lib/grumpProjectStore.js";
 import { isGoogleConfigured, getAccessToken } from "./lib/google/auth.js";
 import { cloudSyncEnabled } from "./lib/prefs.js";
 import { projectHomeFolderId } from "./lib/projectHome.js";
@@ -175,6 +180,23 @@ function ProjectHomeGate() {
   return <ProjectHome />;
 }
 
+function LocalProjectGate({ projectId, localStoreId }) {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const local = createLocalStore(localStoreId);
+    setActiveStore(createGrumpProjectStore(
+      local,
+      projectId,
+      globalThis.fetch,
+      localStoreId || null,
+      grumpProjectApiBaseFromUrl(),
+    ));
+    setReady(true);
+    return () => { setActiveStore(); };
+  }, [projectId, localStoreId]);
+  return ready ? <TakeoffCanvas key={projectId} /> : <Centered title="Opening local project…" />;
+}
+
 function App() {
   // Subscribe to navigation: react-router bails out of re-rendering the same
   // element on navigate(), so App must watch the location itself. The store.js
@@ -182,8 +204,16 @@ function App() {
   // time this re-render runs — useLocation() is purely the re-render trigger.
   useLocation();
   const projectId = projectIdFromUrl();
+  const localProjectId = localProjectIdFromUrl();
+  const grumpProjectId = grumpProjectIdFromUrl();
   // ?project= deep link → the cloud project.
   if (projectId && isGoogleConfigured()) return <ProjectGate projectId={projectId} />;
+  // ?localProject= is the local GRUMP launcher contract. It keeps otherwise
+  // anonymous IndexedDB annotations separate for every durable disk project.
+  if (grumpProjectId) {
+    return <LocalProjectGate projectId={grumpProjectId} localStoreId={localProjectId || null} />;
+  }
+  if (localProjectId) return <LocalProjectGate projectId={localProjectId} localStoreId={localProjectId} />;
   // Otherwise the anonymous local canvas is the default landing screen —
   // open the bundled demo plan or drop your own, no sign-in required.
   // Google sign-in (to browse team projects at /projects) is a subtle,

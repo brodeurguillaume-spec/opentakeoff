@@ -25,6 +25,7 @@ import { extractSvgPrimitives, svgToStamp } from "../lib/svgImport.js";
 import { transformPath, svgPlacedBox } from "../lib/svgpath.js";
 import { ingestFiles } from "../lib/ingest.js";
 import { parseTakeoffImport, mergeTakeoffImport } from "../lib/importTakeoff.js";
+import { createGrumpBridge, shapeFacts } from "../lib/grumpBridge.js";
 import ToolMenu from "../components/ToolMenu.jsx";
 import PlanNavigator from "../components/PlanNavigator.jsx";
 import ReportPanel from "../components/ReportPanel.jsx";
@@ -317,7 +318,12 @@ export default function TakeoffCanvas() {
   // human has confirmed it; absent = confirmed. Any human scale act
   // (rescaleSheet) clears the flag — the act is the confirmation.
   const [scaleUnconfirmed, setScaleUnconfirmed] = useState({});
-  const confirmScale = (key) => setScaleUnconfirmed((m) => { if (!(key in m)) return m; const n = { ...m }; delete n[key]; return n; });
+  const confirmScale = (key, upp = scales[key]) => setScaleUnconfirmed((m) => {
+    if (!(key in m)) return m;
+    const n = { ...m }; delete n[key];
+    grumpBridgeRef.current?.publish("scale.confirmed", { sheet_id: key, units_per_px: upp });
+    return n;
+  });
   const [detectedScales, setDetectedScales] = useState({}); // { sheetKey: {upp,label,multi} } read off the plan text
   const isNarrow = useIsNarrow();
   const [darkMode, setDarkMode] = useState(() => { try { return localStorage.getItem("opentakeoff_dark") === "1"; } catch { return false; } });
@@ -380,6 +386,11 @@ export default function TakeoffCanvas() {
   const [activeLabel, setActiveLabel] = useState(null);   // session-only active phase/area label (#111) — new traces get it; NOT persisted (absent from buildPayload, reset on hydrate)
   const [palette, setPalette] = useState([]);   // ordered condition ids pinned to the top-bar quick-access palette (≤ PALETTE_MAX)
   const [shapes, setShapes] = useState([]);
+  const grumpBridgeRef = useRef(null);              // optional loopback parent bridge; null in normal OpenTakeoff
+  const grumpApplyTakeoffRef = useRef(null);        // bridge callback always reads the current render's project state
+  const grumpProposalActionRef = useRef(null);      // individual review/reject commands from the GRUMP proposal list
+  const grumpProposalFocusRef = useRef(null);       // transient card selection; never persisted as takeoff data
+  const [grumpHighlight, setGrumpHighlight] = useState({ ids: new Set(), accent: "#4f8dff" });
   const [poly, setPoly] = useState([]);
   const [guideOpen, setGuideOpen] = useState(false);   // the in-app manual overlay (? / the toolbar button)
   const [proposal, setProposal] = useState(null);  // One-Click selection under review: { key, regions: [{kind:'pos'|'neg', seed, poly, area_sf, perim_lf}] } — panel-LOCAL px
@@ -468,8 +479,44 @@ export default function TakeoffCanvas() {
       undoStackRef.current = st.undo;
       redoStackRef.current = st.redo;   // a new command discards the redone future
     }
+    for (const fact of shapeFacts(shapes, res.shapes, cmd)) {
+      grumpBridgeRef.current?.publish(fact.type, fact.payload);
+    }
     return res;
   }
+  grumpProposalActionRef.current = ({ action, shape_ids: requestedIds }) => {
+    const wanted = new Set(Array.isArray(requestedIds) ? requestedIds : []);
+    const ids = shapes
+      .filter((shape) => wanted.has(shape.id) && shape.origin?.reviewed === false)
+      .map((shape) => shape.id);
+    if (!ids.length) return { changed: 0 };
+    if (action === "accept") {
+      dispatchShape({ type: "review", ids });
+      setCommitMsg(`Accepted ${ids.length} GRUMP proposal shape${ids.length === 1 ? "" : "s"} — pencil is now ink.`);
+    } else if (action === "reject") {
+      dispatchShape({ type: "delete", ids, reason: "grump-proposal-rejected" });
+      setCommitMsg(`Rejected ${ids.length} GRUMP proposal shape${ids.length === 1 ? "" : "s"}.`);
+    } else {
+      throw new Error(`Unknown GRUMP proposal action: ${action}`);
+    }
+    return { changed: ids.length };
+  };
+  grumpProposalFocusRef.current = ({ shape_ids: requestedIds, accent }) => {
+    const ids = (Array.isArray(requestedIds) ? requestedIds : [])
+      .filter((shapeId) => shapes.some((shape) => shape.id === shapeId));
+    setGrumpHighlight({ ids: new Set(ids), accent: typeof accent === "string" ? accent : "#4f8dff" });
+    if (ids.length) {
+      setSelectedId(ids[0]);
+      setSelectedMarkupId(null);
+      setTool("select");
+      setCommitMsg(`GRUMP proposal selected — ${ids.length} shape${ids.length === 1 ? "" : "s"} highlighted.`);
+    } else {
+      // A rejected proposal no longer has Canvas geometry to focus. Do not
+      // leave its shell card looking selected when nothing can be highlighted.
+      grumpBridgeRef.current?.clearProposalFocus?.();
+    }
+    return { focused: ids.length };
+  };
   // ⌘Z / ⇧⌘Z — apply the recorded inverse (undo) or the exact-restore command
   // (redo). Undoing swaps the entry's cmd for the inverse-of-the-undo before
   // it lands on the redo stack: that command restores the undone state
@@ -493,6 +540,9 @@ export default function TakeoffCanvas() {
     }
     const res = applyShapeCommand(shapes, entry.inverse);
     setShapes(res.shapes);
+    for (const fact of shapeFacts(shapes, res.shapes, entry.inverse)) {
+      grumpBridgeRef.current?.publish(fact.type, fact.payload);
+    }
     redoStackRef.current = [...redoStackRef.current, { cmd: res.inverse, inverse: entry.inverse }];
     setSelVert(null);   // vertex counts may have changed — a stale index must not aim the next ⌫
   }
@@ -508,6 +558,9 @@ export default function TakeoffCanvas() {
     }
     const res = applyShapeCommand(shapes, entry.cmd);
     setShapes(res.shapes);
+    for (const fact of shapeFacts(shapes, res.shapes, entry.cmd)) {
+      grumpBridgeRef.current?.publish(fact.type, fact.payload);
+    }
     undoStackRef.current = [...undoStackRef.current, { cmd: entry.cmd, inverse: res.inverse }];
     setSelVert(null);   // same stale-index guard as undo
   }
@@ -1940,24 +1993,45 @@ export default function TakeoffCanvas() {
   // dashed in their condition colors until the Accept banner inks them; the
   // runtime-load path above resets in-flight work, and mid-session savesArmed
   // is already true, so the merged payload autosaves like any other edit.
+  const applyAgentTakeoff = (candidate, gatewayEvent = null) => {
+    const imported = parseTakeoffImport(JSON.stringify(candidate));
+    const expectedFile = gatewayEvent?.payload?.document?.name;
+    if (expectedFile && !sheets.some((sheet) => sheet.name === expectedFile)) {
+      throw new Error(`Couldn't sync takeoff: open ${expectedFile} in this project first.`);
+    }
+    const { payload, note } = mergeTakeoffImport(buildPayload(), imported, sheets.map((s) => s.name));
+    restoreSavedPayload(payload);
+    const parts = [`Imported ${note.shapes_added} shape${note.shapes_added === 1 ? "" : "s"}`];
+    if (note.shapes_pending) parts.push(`${note.shapes_pending} dashed pending your review — Accept turns pencil to ink`);
+    if (note.conditions_added) parts.push(`${note.conditions_added} new condition${note.conditions_added === 1 ? "" : "s"}`);
+    if (note.conditions_merged) parts.push(`${note.conditions_merged} matched your finish tags`);
+    if (note.unknown_files.length) parts.push(`some shapes reference ${note.unknown_files.join(", ")} — open that file to see them`);
+    setCommitMsg(parts.join(" · ") + ".");
+    return note;
+  };
+  grumpApplyTakeoffRef.current = applyAgentTakeoff;
+
   const importTakeoffFile = async (file) => {
     if (!file) return;
     try {
-      const imported = parseTakeoffImport(await file.text());
-      const { payload, note } = mergeTakeoffImport(buildPayload(), imported, sheets.map((s) => s.name));
-      restoreSavedPayload(payload);
-      const parts = [`Imported ${note.shapes_added} shape${note.shapes_added === 1 ? "" : "s"}`];
-      if (note.shapes_pending) parts.push(`${note.shapes_pending} dashed pending your review — Accept turns pencil to ink`);
-      if (note.conditions_added) parts.push(`${note.conditions_added} new condition${note.conditions_added === 1 ? "" : "s"}`);
-      if (note.conditions_merged) parts.push(`${note.conditions_merged} matched your finish tags`);
-      if (note.unknown_files.length) parts.push(`some shapes reference ${note.unknown_files.join(", ")} — open that file to see them`);
-      setCommitMsg(parts.join(" · ") + ".");
+      applyAgentTakeoff(parseTakeoffImport(await file.text()));
     } catch (e) {
       // module copy already speaks "Couldn't…" (the sticky danger convention);
       // anything unexpected gets wrapped into it rather than aging out unread
       setCommitMsg(String(e?.message || "").startsWith("Couldn't") ? e.message : `Couldn't import takeoff: ${e?.message || e}`);
     }
   };
+
+  useEffect(() => {
+    const bridge = createGrumpBridge({
+      applyTakeoff: (payload, event) => grumpApplyTakeoffRef.current(payload, event),
+      applyProposalAction: (payload, event) => grumpProposalActionRef.current(payload, event),
+      applyProposalFocus: (payload) => grumpProposalFocusRef.current(payload),
+      onError: (message) => setCommitMsg(`Couldn't sync takeoff: ${message}`),
+    });
+    grumpBridgeRef.current = bridge;
+    return () => { bridge?.stop(); if (grumpBridgeRef.current === bridge) grumpBridgeRef.current = null; };
+  }, []);
 
   // markups MUST be in the deps (a cloud/callout/text or an RFI link is real work);
   // omitting it dropped markup saves and could persist a stale markups array.
@@ -2371,6 +2445,14 @@ export default function TakeoffCanvas() {
       return;
     }
     if (e.button !== 0) return;   // only left-click places points
+    // A GRUMP card focus is a transient visual guide. Once the estimator clicks
+    // back into the sheet, restore the canvas's normal selection styling and
+    // tell the parent shell to clear the active card too. This is deliberately
+    // not a shape command: no review state or journaled takeoff data changes.
+    if (grumpHighlight.ids.size) {
+      setGrumpHighlight((current) => ({ ...current, ids: new Set() }));
+      grumpBridgeRef.current?.clearProposalFocus?.();
+    }
     // snapRef/angleRef are drawing-tool aids maintained by moveCrosshair, which
     // bails for the Select tool (:1577) — so in Select they'd be STALE. Select
     // does its own endpoint snap (ocSnap) on drop, so it always uses the raw
@@ -3183,7 +3265,8 @@ export default function TakeoffCanvas() {
       setPrevScale({ key, upp: prior, source: scaleSources[key] || "standard" });
     }
     setScales((s) => ({ ...s, [key]: upp }));
-    confirmScale(key);   // scale gate: a human scale act IS the confirmation
+    confirmScale(key, upp);   // scale gate: a human scale act IS the confirmation
+    grumpBridgeRef.current?.publish("scale.changed", { sheet_id: key, units_per_px: upp, source: "human" });
     // The vector mask bakes the scale in (its hatch-pitch cap and seal radii
     // are feet-true via mppf), so a recalibrated sheet must rebuild its masks
     // on next use — a mask built against the old calibration is exactly the
@@ -6890,6 +6973,8 @@ export default function TakeoffCanvas() {
                       const cond = condById[s.condition_id];
                       const col = cond?.color || "#888";
                       const sel = s.id === selectedId;
+                      const grumpHi = grumpHighlight.ids.has(s.id);
+                      const hiStroke = grumpHi ? grumpHighlight.accent : null;
                       const pts = dn(s.verts_norm);
                       // Screen-constant strokes: zoom is a CSS transform on the
                       // stage div, which never enters this SVG's CTM — so
@@ -6897,7 +6982,7 @@ export default function TakeoffCanvas() {
                       // overview zoom (invisible conditions). Divide by scale
                       // like every other screen-relative size here.
                       const z = tf.scale;
-                      const sw = (sel ? 4 : 2) / z;
+                      const sw = (grumpHi ? 7 : sel ? 4 : 2) / z;
                       // Committed-but-unreviewed machine shapes (an imported MCP
                       // takeoff) render dashed pencil — same invariant as the
                       // ephemeral agent proposals, until Accept flips reviewed.
@@ -6905,15 +6990,15 @@ export default function TakeoffCanvas() {
                       const pDash = `${4 / z} ${3 / z}`;
                       if (s.measure_role === "count") {
                         const [cx, cy] = pts[0], r = 7 / z;
-                        return <rect key={s.id} x={cx - r} y={cy - r} width={r * 2} height={r * 2} rx={2 / z} fill={col + (pending ? "55" : "cc")} stroke={sel ? "#1f3fc7" : "#fff"} strokeWidth={(sel ? 3 : 1.5) / z} strokeDasharray={pending ? `${3 / z} ${2.5 / z}` : undefined} />;
+                        return <rect key={s.id} x={cx - r} y={cy - r} width={r * 2} height={r * 2} rx={2 / z} fill={col + (pending ? "55" : "cc")} stroke={hiStroke || (sel ? "#1f3fc7" : "#fff")} strokeWidth={(grumpHi ? 6 : sel ? 3 : 1.5) / z} strokeDasharray={pending ? `${3 / z} ${2.5 / z}` : undefined} />;
                       }
                       if (s.measure_role === "surface_area") {
-                        return <polyline key={s.id} points={pts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={(sel ? 4.5 : 3.5) / z} strokeDasharray={pending ? pDash : `${10 / z} ${3 / z} ${2 / z} ${3 / z}`} strokeLinecap="round" strokeLinejoin="round" />;
+                        return <polyline key={s.id} points={pts.map((q) => q.join(",")).join(" ")} fill="none" stroke={hiStroke || (sel ? "#1f3fc7" : col)} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={(grumpHi ? 7 : sel ? 4.5 : 3.5) / z} strokeDasharray={pending ? pDash : `${10 / z} ${3 / z} ${2 / z} ${3 / z}`} strokeLinecap="round" strokeLinejoin="round" />;
                       }
                       if (s.measure_role === "linear") {
                         // line_style governs linear outlines (surface_area keeps its dash-dot identity above)
                         const lpts = s.curved ? flattenCurve(pts) : pts;
-                        return <polyline key={s.id} points={lpts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={(sel ? 4 : 3) / z} strokeDasharray={pending ? pDash : dashArrayFor(cond?.line_style || "solid", z)} strokeLinecap="round" strokeLinejoin="round" />;
+                        return <polyline key={s.id} points={lpts.map((q) => q.join(",")).join(" ")} fill="none" stroke={hiStroke || (sel ? "#1f3fc7" : col)} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={(grumpHi ? 7 : sel ? 4 : 3) / z} strokeDasharray={pending ? pDash : dashArrayFor(cond?.line_style || "solid", z)} strokeLinecap="round" strokeLinejoin="round" />;
                       }
                       const ded = s.measure_role === "deduct";
                       // #137 — a RECONCILED deduct (cuts_shape_id) renders as a
@@ -6922,7 +7007,7 @@ export default function TakeoffCanvas() {
                       // solid overlay here would reintroduce the exact
                       // "decal on top" bug the real subtract fixes.
                       if (ded && s.cuts_shape_id) {
-                        return <polygon key={s.id} points={pts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : "#b03a26"} strokeWidth={(sel ? 3 : 1.5) / z} strokeDasharray={`${5 / z} ${3 / z}`} />;
+                        return <polygon key={s.id} points={pts.map((q) => q.join(",")).join(" ")} fill="none" stroke={hiStroke || (sel ? "#1f3fc7" : "#b03a26")} strokeWidth={(grumpHi ? 7 : sel ? 3 : 1.5) / z} strokeDasharray={`${5 / z} ${3 / z}`} />;
                       }
                       // #137 — a parent carrying real hole ring(s): ONE compound
                       // path, outer ring + every hole ring, fill-rule evenodd so
@@ -6931,12 +7016,12 @@ export default function TakeoffCanvas() {
                       if (!ded && s.verts_norm_holes?.length) {
                         const ringD = (ring) => `M${dn(ring).map((q) => q.join(",")).join("L")}Z`;
                         const d = ringD(s.verts_norm) + s.verts_norm_holes.map(ringD).join("");
-                        return <path key={s.id} d={d} fillRule="evenodd" fill={pending ? col + "14" : shapeFill(cond)} stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.9 : undefined} strokeWidth={sw} strokeDasharray={pending ? pDash : dashArrayFor(cond?.line_style || "solid", z)} />;
+                        return <path key={s.id} d={d} fillRule="evenodd" fill={pending ? col + "14" : shapeFill(cond)} stroke={hiStroke || (sel ? "#1f3fc7" : col)} strokeOpacity={pending ? 0.9 : undefined} strokeWidth={sw} strokeDasharray={pending ? pDash : dashArrayFor(cond?.line_style || "solid", z)} />;
                       }
                       // deduct keeps its danger-red dashing (a safety signal, wins over line_style); positive floor_area follows the condition's line_style
                       return <polygon key={s.id} points={pts.map((q) => q.join(",")).join(" ")}
                         fill={ded ? (pending ? "rgba(176,58,38,.10)" : "rgba(176,58,38,.28)") : pending ? col + "14" : shapeFill(cond)}
-                        stroke={ded ? "#b03a26" : (sel ? "#1f3fc7" : col)} strokeOpacity={pending ? 0.9 : undefined} strokeWidth={sw}
+                        stroke={hiStroke || (ded ? "#b03a26" : (sel ? "#1f3fc7" : col))} strokeOpacity={pending ? 0.9 : undefined} strokeWidth={sw}
                         strokeDasharray={pending ? pDash : ded ? `${6 / z} ${4 / z}` : dashArrayFor(cond?.line_style || "solid", z)} />;
                     })}
                     {/* vertex handles for the selected shape (drag to reshape) */}
