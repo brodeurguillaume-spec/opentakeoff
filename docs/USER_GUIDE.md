@@ -789,6 +789,13 @@ Clicking a proposal card is only a visual focus: the corresponding Canvas outlin
 in the card's accent colour. A normal left-click back in the plan clears that focus and the active
 card. Neither action accepts, edits, recolours, or otherwise changes the takeoff.
 
+In a multi-document GRUMP project, the Canvas also reports the active PDF, sheet, and any sheet
+shown side by side. The shell uses that transient context to show the proposals relevant to what
+you are looking at. Hidden proposals are not rejected or discarded: GRUMP keeps them pending in
+their original plan-set and discipline context, and its badge can still report the project-wide
+total. If you select a proposal whose sheet is already open elsewhere in the Canvas, OpenTakeoff
+switches to that sheet before highlighting it.
+
 | Group | Tools |
 |---|---|
 | Open & orient | `load_plan` · `sheet_info` · `sheet_context` · `read_sheet_text` · `find_text` · `view_sheet` |

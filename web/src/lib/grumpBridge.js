@@ -47,7 +47,7 @@ export function shapeFacts(before, after, cmd) {
   return [];
 }
 
-export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_payload, _event) => {}, applyProposalFocus = async (_payload) => {}, onError = () => {}, windowLike = window, documentLike = document }) {
+export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_payload, _event) => {}, applyProposalFocus = async (_payload) => {}, getContext = /** @type {() => any} */ (() => null), onError = () => {}, windowLike = window, documentLike = document }) {
   const parentOrigin = bridgeParent(windowLike.location, documentLike.referrer);
   if (!parentOrigin || windowLike.parent === windowLike) return null;
   let sessionId = null;
@@ -73,6 +73,12 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
     return true;
   };
 
+  const publishContext = (payload = getContext()) => {
+    if (!sessionId || !payload || typeof payload !== "object") return false;
+    post({ kind: "canvas.context", session_id: sessionId, payload });
+    return true;
+  };
+
   const receive = async (message) => {
     const data = message.data;
     if (message.source !== windowLike.parent || message.origin !== parentOrigin || data?.source !== "grump.gateway") return;
@@ -80,6 +86,7 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
       sessionId = data.session_id;
       revision = Math.max(revision, data.revision || 0);
       post({ kind: "canvas.ready", session_id: sessionId });
+      publishContext();
       return;
     }
     if (data.kind === "proposal.focus" && data.session_id === sessionId) {
@@ -122,6 +129,7 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
   return {
     parentOrigin,
     publish,
+    publishContext,
     clearProposalFocus: () => {
       if (!sessionId) return false;
       post({ kind: "proposal.focus.cleared", session_id: sessionId });

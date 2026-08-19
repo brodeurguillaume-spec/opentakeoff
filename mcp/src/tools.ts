@@ -138,7 +138,7 @@ export function registerTools(realServer: McpServer, session: Session): Map<stri
   }));
 
   server.registerTool("measure_polygon", {
-    description: `Measure a closed polygon you supply (min 3 vertices, image px): area_sf and perimeter_lf at the sheet's scale. Requires the scale to be set. Pass condition to commit it; role "deduct" subtracts. ${COORDS}`,
+    description: `Measure a closed polygon you supply (min 3 vertices, image px): area_sf and perimeter_lf at the sheet's scale. Requires the scale to be set. Pass condition to commit it as unreviewed agent pencil; role "deduct" subtracts. ${COORDS}`,
     inputSchema: {
       sheet: z.string(),
       verts: z.array(pointSchema).min(3),
@@ -158,7 +158,7 @@ export function registerTools(realServer: McpServer, session: Session): Map<stri
   }, run("cut_out", (a) => session.cutOut(a)));
 
   server.registerTool("measure_line", {
-    description: `Measure an open polyline (min 2 points, image px): length_lf at the sheet's scale. Requires the scale to be set. Pass condition to commit it as a linear shape (base, transitions, feature strips). ${COORDS}`,
+    description: `Measure an open polyline (min 2 points, image px): length_lf at the sheet's scale. Requires the scale to be set. Pass condition to commit it as an unreviewed agent-pencil linear shape (base, transitions, feature strips). ${COORDS}`,
     inputSchema: {
       sheet: z.string(),
       pts: z.array(pointSchema).min(2),
@@ -168,7 +168,7 @@ export function registerTools(realServer: McpServer, session: Session): Map<stri
   }, run("measure_line", (a) => session.measureLine(a.sheet, a.pts, { condition: a.condition })));
 
   server.registerTool("measure_surface", {
-    description: `Surface Area — wall SF (#146): trace an OPEN run along the wall in plan view (min 2 points, image px) and the quantity is traced LF × height. This is how wall tile, wainscot, and wall systems are taken off — the quantity family one_click and measure_polygon cannot produce. Height lives on the CONDITION (the canvas's H knob): pass height_ft to set it on this call (journals as its own undo step, like typing H before tracing), or set it once with edit_condition; with neither, this refuses and mints nothing. The shape snapshots the height it was quantified at. Requires the sheet's scale. ${COORDS}`,
+    description: `Surface Area — wall SF (#146): trace an OPEN run along the wall in plan view (min 2 points, image px) and the quantity is traced LF × height. This is how wall tile, wainscot, and wall systems are taken off — the quantity family one_click and measure_polygon cannot produce. Height lives on the CONDITION (the canvas's H knob): pass height_ft to set it on this call (journals as its own undo step, like typing H before tracing), or set it once with edit_condition; with neither, this refuses and mints nothing. The shape snapshots the height it was quantified at and stays unreviewed agent pencil until a person affirms it. Requires the sheet's scale. ${COORDS}`,
     inputSchema: {
       sheet: z.string(),
       pts: z.array(pointSchema).min(2).describe("The wall run, an open polyline (image px)"),
@@ -179,7 +179,7 @@ export function registerTools(realServer: McpServer, session: Session): Map<stri
   }, run("measure_surface", (a) => session.measureSurface(a.sheet, a.pts, { condition: a.condition, height_ft: a.height_ft })));
 
   server.registerTool("place_count", {
-    description: `Count markers — EA (#146): one point, one each. Thresholds, stair nosings, floor boxes, entrance mats — the scale-free quantity family. Commits one count shape per point (computed {count: 1}, exactly the canvas's Count tool), NO scale required, and the whole call is ONE undo step like a detect_rooms sweep. takeoff_summary reports them as ea; the marked set draws each marker. ${COORDS}`,
+    description: `Count markers — EA (#146): one point, one each. Thresholds, stair nosings, floor boxes, entrance mats — the scale-free quantity family. Commits one unreviewed agent-pencil count shape per point (computed {count: 1}, exactly the canvas's Count tool), NO scale required, and the whole call is ONE undo step like a detect_rooms sweep. takeoff_summary reports them as ea; the marked set draws each marker. ${COORDS}`,
     inputSchema: {
       sheet: z.string(),
       points: z.array(pointSchema).min(1).describe("Marker positions (image px), one committed count shape each"),

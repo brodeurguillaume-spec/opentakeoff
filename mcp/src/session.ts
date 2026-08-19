@@ -1488,7 +1488,7 @@ export class Session {
     let shape_id: string | undefined;
     // agent-supplied coordinates are a hand trace by a machine hand: manual
     // method, agent actor — and never reviewed (no human affirmed anything).
-    if (opts.condition) shape_id = this.commit(s, opts.condition, opts.role, verts, { area_sf, perimeter_lf }, { method: "manual", actor: "agent" }).id;
+    if (opts.condition) shape_id = this.commit(s, opts.condition, opts.role, verts, { area_sf, perimeter_lf }, { method: "manual", actor: "agent", reviewed: false }).id;
     this.flushCommits("measure_polygon");
     const mixed = this.scaleWarningFor(s, verts);
     return { area_sf, perimeter_lf, nverts: verts.length, ...(shape_id ? { shape_id } : {}), ...(mixed ? { warning: mixed } : {}) };
@@ -1500,7 +1500,7 @@ export class Session {
     const length_lf = round2(openLen(pts) * s.upp);
     let shape_id: string | undefined;
     // area_sf stays 0 — the canvas only mints border SF when the condition has a thickness
-    if (opts.condition) shape_id = this.commit(s, opts.condition, "linear", pts, { area_sf: 0, perimeter_lf: length_lf }, { method: "manual", actor: "agent" }).id;
+    if (opts.condition) shape_id = this.commit(s, opts.condition, "linear", pts, { area_sf: 0, perimeter_lf: length_lf }, { method: "manual", actor: "agent", reviewed: false }).id;
     this.flushCommits("measure_line");
     return { length_lf, npts: pts.length, ...(shape_id ? { shape_id } : {}) };
   }
@@ -1525,7 +1525,7 @@ export class Session {
       c.height_ft = opts.height_ft;
     }
     const LF = openLen(pts) * s.upp;
-    const shape = this.commit(s, opts.condition, "surface_area", pts, { area_sf: round2(LF * h), perimeter_lf: round2(LF) }, { method: "manual", actor: "agent" });
+    const shape = this.commit(s, opts.condition, "surface_area", pts, { area_sf: round2(LF * h), perimeter_lf: round2(LF) }, { method: "manual", actor: "agent", reviewed: false });
     shape.height_ft = h;
     this.flushCommits("measure_surface");
     return { condition: c.finish_tag, height_ft: h, length_lf: round2(LF), area_sf: round2(LF * h), npts: pts.length, shape_id: shape.id };
@@ -1887,7 +1887,7 @@ export class Session {
     const s = this.sheet(name);
     const ids = points.map(([x, y], i) =>
       this.commit(s, opts.condition, "count", [[x, y]], { count: 1 },
-        opts.origins?.[i] ? { ...opts.origins[i] } : { method: "manual", actor: "agent" }).id);
+        opts.origins?.[i] ? { ...opts.origins[i] } : { method: "manual", actor: "agent", reviewed: false }).id);
     this.flushCommits(opts.tool ?? "place_count");
     const c = this.conditions.find((x) => x.finish_tag === opts.condition)!;
     const ea_total = this.shapes

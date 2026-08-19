@@ -313,6 +313,9 @@ test("measure_surface: refuses without a height (minting nothing), commits LF ×
   assert.equal(r.data.height_ft, 9);
   assert.equal(r.data.length_lf, 8.33);
   assert.equal(r.data.area_sf, 75);
+  const surfacePayload = await call(client, "export_takeoff", {});
+  const surfaceShape = surfacePayload.data.shapes.find((s: any) => s.id === r.data.shape_id);
+  assert.equal(surfaceShape.origin.reviewed, false, "manual wall geometry is pending human review on the wire");
   const sum = await call(client, "takeoff_summary");
   assert.equal(sum.data.conditions[0].wall_sf, 75);
 
@@ -337,6 +340,10 @@ test("place_count: EA with no scale set, one journal step for the sweep, marked 
   assert.equal(r.data.committed, 3);
   assert.equal(r.data.ea_total, 3);
   assert.equal(r.data.shape_ids.length, 3);
+  const countPayload = await call(client, "export_takeoff", {});
+  const countShapes = countPayload.data.shapes.filter((s: any) => r.data.shape_ids.includes(s.id));
+  assert.equal(countShapes.length, 3);
+  assert.ok(countShapes.every((s: any) => s.origin.reviewed === false), "manual count geometry is pending human review on the wire");
   const sum = await call(client, "takeoff_summary");
   assert.equal(sum.data.conditions[0].ea, 3);
 

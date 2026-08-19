@@ -198,7 +198,7 @@ test("measure: polygon SF and line LF at scale; deletion removes the shape", asy
   for (const shp of s.shapes) {
     assert.equal(shp.origin?.method, "manual");
     assert.equal(shp.origin?.actor, "agent");
-    assert.equal(shp.origin?.reviewed, undefined, "measure commits claim no review state");
+    assert.equal(shp.origin?.reviewed, false, "manual agent geometry stays pencil until human review");
   }
   s.deleteShape(poly.shape_id!);
   assert.equal(s.shapes.length, 1);

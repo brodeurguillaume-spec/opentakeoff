@@ -125,3 +125,32 @@ test("bridge forwards transient proposal focus without turning it into a fact", 
   assert.deepEqual(sent.at(-1), { source: "opentakeoff.grump", kind: "proposal.focus.cleared", session_id: "s" });
   bridge!.stop();
 });
+
+test("bridge announces the visible document context on session and sheet changes", async () => {
+  const sent: any[] = [];
+  let listener: any = null;
+  const parent = { postMessage: (message: any) => { sent.push(message); } };
+  const windowLike: any = {
+    location: { search: "?grumpBridge=1" }, parent,
+    addEventListener: (_name: string, fn: any) => { listener = fn; }, removeEventListener: () => {},
+  };
+  const bridge = createGrumpBridge({
+    windowLike,
+    documentLike: { referrer: "http://127.0.0.1:8765/" } as Document,
+    applyTakeoff: async () => {},
+    getContext: () => ({ document_name: "A101.pdf", sheet_id: "A101.pdf#2", visible_sheet_ids: ["A101.pdf#2"] }),
+  });
+  await listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: { source: "grump.gateway", kind: "session", session_id: "s", revision: 1 },
+  });
+  assert.deepEqual(sent.at(-1), {
+    source: "opentakeoff.grump",
+    kind: "canvas.context",
+    session_id: "s",
+    payload: { document_name: "A101.pdf", sheet_id: "A101.pdf#2", visible_sheet_ids: ["A101.pdf#2"] },
+  });
+  assert.equal(bridge!.publishContext({ document_name: "S101.pdf", sheet_id: "S101.pdf", visible_sheet_ids: ["S101.pdf"] }), true);
+  assert.equal(sent.at(-1).payload.document_name, "S101.pdf");
+  bridge!.stop();
+});

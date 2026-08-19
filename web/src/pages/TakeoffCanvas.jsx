@@ -387,6 +387,7 @@ export default function TakeoffCanvas() {
   const [palette, setPalette] = useState([]);   // ordered condition ids pinned to the top-bar quick-access palette (≤ PALETTE_MAX)
   const [shapes, setShapes] = useState([]);
   const grumpBridgeRef = useRef(null);              // optional loopback parent bridge; null in normal OpenTakeoff
+  const grumpCanvasContextRef = useRef(null);        // current document/sheet snapshot sent outside the durable event journal
   const grumpApplyTakeoffRef = useRef(null);        // bridge callback always reads the current render's project state
   const grumpProposalActionRef = useRef(null);      // individual review/reject commands from the GRUMP proposal list
   const grumpProposalFocusRef = useRef(null);       // transient card selection; never persisted as takeoff data
@@ -504,6 +505,8 @@ export default function TakeoffCanvas() {
   grumpProposalFocusRef.current = ({ shape_ids: requestedIds, accent }) => {
     const ids = (Array.isArray(requestedIds) ? requestedIds : [])
       .filter((shapeId) => shapes.some((shape) => shape.id === shapeId));
+    const target = shapes.find((shape) => ids.includes(shape.id));
+    if (target && !groupKeys.includes(target.sheet_id)) goToSheet(target.sheet_id);
     setGrumpHighlight({ ids: new Set(ids), accent: typeof accent === "string" ? accent : "#4f8dff" });
     if (ids.length) {
       setSelectedId(ids[0]);
@@ -901,6 +904,23 @@ export default function TakeoffCanvas() {
   // all the original single-sheet math is unchanged.
   const groupKeys = sheetGroup.length ? sheetGroup : [sheetKey];
   const stitchById = useMemo(() => Object.fromEntries(stitches.map((s) => [s.id, s])), [stitches]);
+  // The parent shell filters GRUMP review state by the document actually on
+  // screen. This snapshot is deliberately transient: sheet navigation is view
+  // state, not a takeoff mutation and must not inflate the durable event log.
+  const contextKey = focusKey && groupKeys.includes(focusKey) ? focusKey : groupKeys[0];
+  const contextSourceKey = isStitchKey(contextKey)
+    ? (stitchById[contextKey]?.members?.[0]?.key || sheetKey)
+    : contextKey;
+  grumpCanvasContextRef.current = {
+    document_name: parseSheetKey(contextSourceKey).file,
+    sheet_id: contextKey,
+    visible_sheet_ids: groupKeys.flatMap((key) => (
+      isStitchKey(key) ? (stitchById[key]?.members || []).map((member) => member.key) : [key]
+    )),
+  };
+  useEffect(() => {
+    grumpBridgeRef.current?.publishContext?.(grumpCanvasContextRef.current);
+  }, [sheetKey, focusKey, sheetGroup, stitches]);
   // docEpoch re-keys groupSig when a re-dropped file's BYTES changed under the
   // same name (store.addPdf → revised): the render effect keyed on groupSig is
   // the one path that resets every cache (compositor, pageObjs, snap grids) and
@@ -2027,6 +2047,7 @@ export default function TakeoffCanvas() {
       applyTakeoff: (payload, event) => grumpApplyTakeoffRef.current(payload, event),
       applyProposalAction: (payload, event) => grumpProposalActionRef.current(payload, event),
       applyProposalFocus: (payload) => grumpProposalFocusRef.current(payload),
+      getContext: () => grumpCanvasContextRef.current,
       onError: (message) => setCommitMsg(`Couldn't sync takeoff: ${message}`),
     });
     grumpBridgeRef.current = bridge;
