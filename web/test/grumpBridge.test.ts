@@ -72,6 +72,86 @@ test("bridge applies a proposal once and emits a correlated Canvas fact", async 
   bridge.stop();
 });
 
+test("bridge serializes rapid proposal replay imports", async () => {
+  let listener: any = null;
+  const parent = { postMessage: () => {} };
+  const windowLike: any = {
+    location: { search: "?grumpBridge=1" }, parent,
+    addEventListener: (_name: string, fn: any) => { listener = fn; },
+    removeEventListener: () => {},
+  };
+  const order: string[] = [];
+  let releaseFirst: (() => void) | null = null;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const bridge = createGrumpBridge({
+    windowLike,
+    documentLike: { referrer: "http://127.0.0.1:8765/" } as Document,
+    applyTakeoff: async (takeoff: any) => {
+      order.push(`start:${takeoff.id}`);
+      if (takeoff.id === "first") await firstGate;
+      order.push(`end:${takeoff.id}`);
+    },
+  });
+  await listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: { source: "grump.gateway", kind: "session", session_id: "s", revision: 1 },
+  });
+  const event = (id: string, revision: number) => ({
+    session_id: "s", event_id: `proposal-${id}`, revision,
+    payload: { shape_id: `shape-${id}`, takeoff: { id } },
+  });
+  const first = listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: { source: "grump.gateway", kind: "takeoff.proposed", event: event("first", 2) },
+  });
+  const second = listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: { source: "grump.gateway", kind: "takeoff.proposed", event: event("second", 3) },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(order, ["start:first"]);
+  releaseFirst!();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ["start:first", "end:first", "start:second", "end:second"]);
+  bridge!.stop();
+});
+
+test("bridge scopes a replay import to the proposal's own shapes", async () => {
+  let listener: any = null;
+  let imported: any = null;
+  const parent = { postMessage: () => {} };
+  const windowLike: any = {
+    location: { search: "?grumpBridge=1" }, parent,
+    addEventListener: (_name: string, fn: any) => { listener = fn; },
+    removeEventListener: () => {},
+  };
+  const bridge = createGrumpBridge({
+    windowLike,
+    documentLike: { referrer: "http://127.0.0.1:8765/" } as Document,
+    applyTakeoff: async (takeoff: any) => { imported = takeoff; },
+  });
+  await listener({ source: parent, origin: "http://127.0.0.1:8765", data: { source: "grump.gateway", kind: "session", session_id: "s", revision: 1 } });
+  await listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: {
+      source: "grump.gateway", kind: "takeoff.proposed",
+      event: {
+        session_id: "s", event_id: "proposal-new", revision: 2,
+        payload: {
+          proposal: { shape_ids: ["new"] },
+          takeoff: {
+            shapes: [{ id: "rejected", condition_id: "old-cond" }, { id: "new", condition_id: "new-cond" }],
+            conditions: [{ id: "old-cond" }, { id: "new-cond" }],
+          },
+        },
+      },
+    },
+  });
+  assert.deepEqual(imported.shapes.map((shape: any) => shape.id), ["new"]);
+  assert.deepEqual(imported.conditions.map((condition: any) => condition.id), ["new-cond"]);
+  bridge!.stop();
+});
+
 test("bridge defers a proposal until the PDF registry is ready, then applies it once", async () => {
   const sent: any[] = [];
   let listener: any = null;
@@ -121,6 +201,52 @@ test("bridge defers a proposal until the PDF registry is ready, then applies it 
   bridge!.stop();
 });
 
+test("deferred replay does not resurrect a shape rejected later in the journal", async () => {
+  let listener: any = null;
+  let ready = false;
+  const importedShapeIds: string[][] = [];
+  const parent = { postMessage: () => {} };
+  const windowLike: any = {
+    location: { search: "?grumpBridge=1" }, parent,
+    addEventListener: (_name: string, fn: any) => { listener = fn; },
+    removeEventListener: () => {},
+  };
+  const bridge = createGrumpBridge({
+    windowLike,
+    documentLike: { referrer: "http://127.0.0.1:8765/" } as Document,
+    applyTakeoff: async (takeoff: any) => {
+      if (!ready) {
+        const error: any = new Error("not hydrated");
+        error.retryable = true;
+        throw error;
+      }
+      importedShapeIds.push((takeoff.shapes || []).map((shape: any) => shape.id));
+    },
+    applyProposalFact: async () => {},
+  });
+  await listener({ source: parent, origin: "http://127.0.0.1:8765", data: { source: "grump.gateway", kind: "session", session_id: "s", revision: 1 } });
+  const proposal = {
+    session_id: "s", event_id: "proposal-rejected", revision: 2,
+    payload: {
+      shape_id: "rejected",
+      takeoff: { shapes: [{ id: "rejected", condition_id: "c1" }], conditions: [{ id: "c1" }] },
+    },
+  };
+  await listener({ source: parent, origin: "http://127.0.0.1:8765", data: { source: "grump.gateway", kind: "takeoff.proposed", event: proposal } });
+  await listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: {
+      source: "grump.gateway", kind: "gateway.event",
+      event: { session_id: "s", event_id: "deleted-rejected", revision: 3, type: "shape.deleted", payload: { shape_ids: ["rejected"] } },
+    },
+  });
+  ready = true;
+  bridge!.publishContext({ sheet_id: "A101" });
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.deepEqual(importedShapeIds, [[]]);
+  bridge!.stop();
+});
+
 test("bridge applies each journaled proposal action once", async () => {
   const sent: any[] = [];
   const actions: any[] = [];
@@ -151,6 +277,38 @@ test("bridge applies each journaled proposal action once", async () => {
     data: { source: "grump.gateway", kind: "gateway.event", event: action },
   });
   assert.deepEqual(actions, [{ action: "accept", shape_ids: ["s1"] }]);
+  bridge!.stop();
+});
+
+test("bridge replays terminal shape facts after queued proposal imports", async () => {
+  const order: string[] = [];
+  let listener: any = null;
+  const parent = { postMessage: () => {} };
+  const windowLike: any = {
+    location: { search: "?grumpBridge=1" }, parent,
+    addEventListener: (_name: string, fn: any) => { listener = fn; },
+    removeEventListener: () => {},
+  };
+  const bridge = createGrumpBridge({
+    windowLike,
+    documentLike: { referrer: "http://127.0.0.1:8765/" } as Document,
+    applyTakeoff: async () => { order.push("proposal"); },
+    applyProposalFact: async (type: string) => { order.push(type); },
+  });
+  await listener({ source: parent, origin: "http://127.0.0.1:8765", data: { source: "grump.gateway", kind: "session", session_id: "s", revision: 1 } });
+  const proposal = {
+    session_id: "s", event_id: "proposal-1", revision: 2,
+    payload: { shape_id: "shape-1", takeoff: { id: "one" } },
+  };
+  const deleted = {
+    session_id: "s", event_id: "deleted-1", revision: 3, type: "shape.deleted",
+    payload: { shape_ids: ["shape-1"] },
+  };
+  await Promise.all([
+    listener({ source: parent, origin: "http://127.0.0.1:8765", data: { source: "grump.gateway", kind: "takeoff.proposed", event: proposal } }),
+    listener({ source: parent, origin: "http://127.0.0.1:8765", data: { source: "grump.gateway", kind: "gateway.event", event: deleted } }),
+  ]);
+  assert.deepEqual(order, ["proposal", "shape.deleted"]);
   bridge!.stop();
 });
 
@@ -233,13 +391,25 @@ test("bridge replays a durable geometry request and its terminal capture in orde
     type: "geometry.captured",
     payload: { request_event_id: "capture:chat-1", capture_tool: "line", sheet_id: "A101.pdf", points_norm: [[0.1, 0.2], [0.3, 0.4]] },
   };
-  for (const event of [requested, requested, captured, captured]) await listener({
+  const polygonRequested = {
+    session_id: "s", event_id: "capture:chat-2", revision: 4,
+    type: "geometry.capture.requested",
+    payload: { request_event_id: "chat-2", capture_tool: "polygon", min_points: 3, sheet_id: "A101.pdf" },
+  };
+  const polygonCaptured = {
+    session_id: "s", event_id: "geometry-captured:capture:chat-2", revision: 5,
+    type: "geometry.captured",
+    payload: { request_event_id: "capture:chat-2", capture_tool: "polygon", sheet_id: "A101.pdf", points_norm: [[0.1, 0.2], [0.3, 0.2], [0.3, 0.4]] },
+  };
+  for (const event of [requested, requested, captured, captured, polygonRequested, polygonCaptured]) await listener({
     source: parent, origin: "http://127.0.0.1:8765",
     data: { source: "grump.gateway", kind: "gateway.event", event },
   });
   assert.deepEqual(received, [
     ["geometry.capture.requested", requested.payload],
     ["geometry.captured", captured.payload],
+    ["geometry.capture.requested", polygonRequested.payload],
+    ["geometry.captured", polygonCaptured.payload],
   ]);
   bridge!.stop();
 });

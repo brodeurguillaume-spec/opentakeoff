@@ -390,9 +390,11 @@ export default function TakeoffCanvas() {
   const grumpCanvasContextRef = useRef(null);        // current document/sheet snapshot sent outside the durable event journal
   const grumpApplyTakeoffRef = useRef(null);        // bridge callback always reads the current render's project state
   const grumpProposalActionRef = useRef(null);      // individual review/reject commands from the GRUMP proposal list
+  const grumpProposalFactRef = useRef(null);        // terminal review/edit facts replayed after their proposal import
   const grumpProposalFocusRef = useRef(null);       // transient card selection; never persisted as takeoff data
   const grumpGeometryCaptureRef = useRef(null);     // durable request/replay events from the GRUMP gateway
-  const grumpCaptureStateRef = useRef(null);        // live two-click state for pointer handlers and Escape
+  const grumpTakeoffPayloadRef = useRef(null);      // same-turn replay imports compose here before React commits
+  const grumpCaptureStateRef = useRef(null);        // live human geometry state for pointer handlers and Escape
   const [grumpHighlight, setGrumpHighlight] = useState({ ids: new Set(), accent: "#4f8dff" });
   const [grumpCapture, setGrumpCapture] = useState(null);
   const [poly, setPoly] = useState([]);
@@ -473,9 +475,15 @@ export default function TakeoffCanvas() {
   //     `computed` the recorded commands froze).
   const undoStackRef = useRef([]);   // [{ cmd, inverse }]
   const redoStackRef = useRef([]);
-  function dispatchShape(cmd, { record = true, reset = false } = {}) {
-    const res = applyShapeCommand(shapes, cmd);
+  function dispatchShape(cmd, { record = true, reset = false, publishFacts = true, factEventId = null } = {}) {
+    const sourceShapes = Array.isArray(grumpTakeoffPayloadRef.current?.shapes)
+      ? grumpTakeoffPayloadRef.current.shapes
+      : shapes;
+    const res = applyShapeCommand(sourceShapes, cmd);
     setShapes(res.shapes);
+    if (grumpTakeoffPayloadRef.current) {
+      grumpTakeoffPayloadRef.current = { ...grumpTakeoffPayloadRef.current, shapes: res.shapes };
+    }
     if (res.counted) countDeleted(res.counted);
     if (reset) { undoStackRef.current = []; redoStackRef.current = []; }
     else if (record && res.inverse) {
@@ -483,27 +491,58 @@ export default function TakeoffCanvas() {
       undoStackRef.current = st.undo;
       redoStackRef.current = st.redo;   // a new command discards the redone future
     }
-    for (const fact of shapeFacts(shapes, res.shapes, cmd)) {
-      grumpBridgeRef.current?.publish(fact.type, fact.payload);
+    for (const fact of publishFacts ? shapeFacts(sourceShapes, res.shapes, cmd) : []) {
+      const eventId = factEventId ? `shape-fact:${factEventId}:${fact.type}` : null;
+      grumpBridgeRef.current?.publish(fact.type, fact.payload, "human", eventId);
     }
     return res;
   }
-  grumpProposalActionRef.current = ({ action, shape_ids: requestedIds }) => {
+  grumpProposalActionRef.current = ({ action, shape_ids: requestedIds }, event) => {
     const wanted = new Set(Array.isArray(requestedIds) ? requestedIds : []);
-    const ids = shapes
+    const currentShapes = Array.isArray(grumpTakeoffPayloadRef.current?.shapes)
+      ? grumpTakeoffPayloadRef.current.shapes
+      : shapes;
+    const ids = currentShapes
       .filter((shape) => wanted.has(shape.id) && shape.origin?.reviewed === false)
       .map((shape) => shape.id);
     if (!ids.length) return { changed: 0 };
     if (action === "accept") {
-      dispatchShape({ type: "review", ids });
+      dispatchShape({ type: "review", ids }, { factEventId: event?.event_id });
       setCommitMsg(`Accepted ${ids.length} GRUMP proposal shape${ids.length === 1 ? "" : "s"} — pencil is now ink.`);
     } else if (action === "reject") {
-      dispatchShape({ type: "delete", ids, reason: "grump-proposal-rejected" });
+      dispatchShape({ type: "delete", ids, reason: "grump-proposal-rejected" }, { factEventId: event?.event_id });
       setCommitMsg(`Rejected ${ids.length} GRUMP proposal shape${ids.length === 1 ? "" : "s"}.`);
     } else {
       throw new Error(`Unknown GRUMP proposal action: ${action}`);
     }
     return { changed: ids.length };
+  };
+  grumpProposalFactRef.current = (type, payload, event) => {
+    const currentPayload = grumpTakeoffPayloadRef.current;
+    const sourceShapes = Array.isArray(currentPayload?.shapes) ? currentPayload.shapes : shapes;
+    const ids = new Set(Array.isArray(payload?.shape_ids) ? payload.shape_ids : []);
+    let next = sourceShapes;
+    if (type === "shape.deleted") {
+      next = sourceShapes.filter((shape) => !ids.has(shape.id));
+    } else if (type === "shape.reviewed") {
+      next = sourceShapes.map((shape) => ids.has(shape.id) && shape.origin?.reviewed === false
+        ? { ...shape, origin: { ...shape.origin, reviewed: true, accepted_ts: event?.timestamp || new Date().toISOString() } }
+        : shape);
+    } else if (type === "shape.review.undone") {
+      next = sourceShapes.map((shape) => {
+        if (!ids.has(shape.id) || shape.origin?.reviewed !== true) return shape;
+        const origin = { ...shape.origin, reviewed: false };
+        delete origin.accepted_ts;
+        return { ...shape, origin };
+      });
+    } else if (type === "shape.edited") {
+      const replacements = new Map((Array.isArray(payload?.shapes) ? payload.shapes : []).map((shape) => [shape.id, shape]));
+      next = sourceShapes.map((shape) => replacements.get(shape.id) || shape);
+    }
+    if (next === sourceShapes) return { changed: 0 };
+    setShapes(next);
+    if (currentPayload) grumpTakeoffPayloadRef.current = { ...currentPayload, shapes: next };
+    return { changed: Math.abs(sourceShapes.length - next.length) || ids.size };
   };
   grumpProposalFocusRef.current = ({ shape_ids: requestedIds, accent }) => {
     const ids = (Array.isArray(requestedIds) ? requestedIds : [])
@@ -525,24 +564,33 @@ export default function TakeoffCanvas() {
   };
   grumpGeometryCaptureRef.current = (type, payload, event) => {
     if (type === "geometry.capture.requested") {
-      if (payload?.capture_tool !== "line" || payload?.point_count !== 2) {
+      const captureTool = payload?.capture_tool;
+      const supported = (
+        captureTool === "line" && payload?.point_count === 2
+      ) || (
+        captureTool === "polygon" && Number(payload?.min_points) >= 3
+      );
+      if (!supported) {
         throw new Error("Unsupported GRUMP geometry capture request.");
       }
       if (typeof payload.sheet_id !== "string" || isStitchKey(payload.sheet_id)) {
-        throw new Error("GRUMP line capture requires one ordinary PDF sheet.");
+        throw new Error("GRUMP geometry capture requires one ordinary PDF sheet.");
       }
       const next = {
         request_event_id: event?.event_id,
         task_event_id: payload?.request_event_id,
-        capture_tool: "line",
+        capture_tool: captureTool,
         sheet_id: payload.sheet_id,
+        min_points: captureTool === "polygon" ? Number(payload.min_points) : 2,
         points_norm: [],
         stage_points: [],
       };
       grumpCaptureStateRef.current = next;
       setGrumpCapture(next);
       if (!groupKeys.includes(payload.sheet_id)) goToSheet(payload.sheet_id);
-      setCommitMsg("GRUMP line capture — click the first point, then the second.");
+      setCommitMsg(captureTool === "line"
+        ? "GRUMP line capture — click the first point, then the second."
+        : "GRUMP surface capture — click at least three vertices, then Finish.");
       return;
     }
     const current = grumpCaptureStateRef.current;
@@ -2019,6 +2067,10 @@ export default function TakeoffCanvas() {
     // byte-identical on round-trip; only a metric project carries the field.
     return { project_name: projectName, ...(units === "metric" ? { units } : {}), ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}), ...(scaleUnconfirmed[sheet_id] === false ? { scale_confirmed: false } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, ...(approvals.length ? { approvals } : {}), ...(rules.length ? { rules } : {}), sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(stitches.length ? { stitches } : {}), ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(layerOverrides).length ? { layer_overrides: layerOverrides } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
   };
+  // React may batch several journal-replay imports before the next render.
+  // Preserve each merged result immediately so the following proposal composes
+  // on it instead of rebuilding from the render preceding the entire replay.
+  grumpTakeoffPayloadRef.current = buildPayload();
   // Runtime restore of a saved payload — the Revisions panel's Restore lands
   // here. A runtime load (unlike mount) can interrupt work in
   // flight: an unfinished trace/calibration/proposal must not commit into the
@@ -2059,7 +2111,9 @@ export default function TakeoffCanvas() {
       error.retryable = true;
       throw error;
     }
-    const { payload, note } = mergeTakeoffImport(buildPayload(), imported, sheets.map((s) => s.name));
+    const currentPayload = grumpTakeoffPayloadRef.current || buildPayload();
+    const { payload, note } = mergeTakeoffImport(currentPayload, imported, sheets.map((s) => s.name));
+    grumpTakeoffPayloadRef.current = payload;
     restoreSavedPayload(payload);
     const parts = [`Imported ${note.shapes_added} shape${note.shapes_added === 1 ? "" : "s"}`];
     if (note.shapes_pending) parts.push(`${note.shapes_pending} dashed pending your review — Accept turns pencil to ink`);
@@ -2086,6 +2140,7 @@ export default function TakeoffCanvas() {
     const bridge = createGrumpBridge({
       applyTakeoff: (payload, event) => grumpApplyTakeoffRef.current(payload, event),
       applyProposalAction: (payload, event) => grumpProposalActionRef.current(payload, event),
+      applyProposalFact: (type, payload, event) => grumpProposalFactRef.current(type, payload, event),
       applyProposalFocus: (payload) => grumpProposalFocusRef.current(payload),
       applyGeometryCapture: (type, payload, event) => grumpGeometryCaptureRef.current(type, payload, event),
       getContext: () => grumpCanvasContextRef.current,
@@ -2429,7 +2484,8 @@ export default function TakeoffCanvas() {
       if (viewRef.current === "gallery") return;
       if (e.key === "Backspace" || e.key === "Delete") {
         e.preventDefault();
-        if (poly.length) { setPoly((q) => q.slice(0, -1)); }
+        if (grumpCaptureStateRef.current) { removeLastGrumpCapturePoint(); }
+        else if (poly.length) { setPoly((q) => q.slice(0, -1)); }
         else if (ocSel && proposal) { deleteSelectedOcVertex(); }
         else if (proposal?.regions.length) { setProposal((pr) => { const rg = pr.regions.slice(0, -1); return rg.length ? { ...pr, regions: rg } : null; }); }
         else if (selVert != null && selectedId) { deleteSelectedShapeVertex(); }
@@ -2443,7 +2499,8 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { if (grumpCaptureStateRef.current) { e.preventDefault(); cancelGrumpCapture(); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); setAlignPt(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      } else if (e.key === "Enter" && grumpCaptureStateRef.current?.capture_tool === "polygon") { e.preventDefault(); completeGrumpCapture(); }
+      else if (e.key === "Escape") { if (grumpCaptureStateRef.current) { e.preventDefault(); cancelGrumpCapture(); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); setAlignPt(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -2507,7 +2564,21 @@ export default function TakeoffCanvas() {
     if (!published) return false;
     grumpCaptureStateRef.current = null;
     setGrumpCapture(null);
-    setCommitMsg("GRUMP line capture cancelled — no takeoff was created.");
+    setCommitMsg("GRUMP geometry capture cancelled — no takeoff was created.");
+    return true;
+  }
+
+  function removeLastGrumpCapturePoint() {
+    const current = grumpCaptureStateRef.current;
+    if (!current?.points_norm?.length) return false;
+    const next = {
+      ...current,
+      points_norm: current.points_norm.slice(0, -1),
+      stage_points: current.stage_points.slice(0, -1),
+    };
+    grumpCaptureStateRef.current = next;
+    setGrumpCapture(next);
+    setCommitMsg(`GRUMP ${current.capture_tool} capture — ${next.points_norm.length} point(s) placed.`);
     return true;
   }
 
@@ -2523,6 +2594,17 @@ export default function TakeoffCanvas() {
       Math.max(0, Math.min(1, (point[0] - panel.xOffset) / panel.img.w)),
       Math.max(0, Math.min(1, point[1] / panel.img.h)),
     ];
+    if (current.capture_tool === "polygon") {
+      const next = {
+        ...current,
+        points_norm: [...current.points_norm, normalized],
+        stage_points: [...current.stage_points, [point[0], point[1]]],
+      };
+      grumpCaptureStateRef.current = next;
+      setGrumpCapture(next);
+      setCommitMsg(`GRUMP surface capture — ${next.points_norm.length} point(s); finish after at least ${current.min_points}.`);
+      return true;
+    }
     if (!current.points_norm.length) {
       const next = {
         ...current,
@@ -2553,6 +2635,46 @@ export default function TakeoffCanvas() {
     grumpCaptureStateRef.current = null;
     setGrumpCapture(null);
     setCommitMsg("GRUMP line captured — calculating the proposal.");
+    return true;
+  }
+
+  function completeGrumpCapture({ dropDoubleClick = false } = {}) {
+    const current = grumpCaptureStateRef.current;
+    if (!current || current.capture_tool !== "polygon") return false;
+    let pointsNorm = current.points_norm;
+    let stagePoints = current.stage_points;
+    if (dropDoubleClick && pointsNorm.length >= 2) {
+      const a = pointsNorm[pointsNorm.length - 2], b = pointsNorm[pointsNorm.length - 1];
+      if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.002) {
+        pointsNorm = pointsNorm.slice(0, -1);
+        stagePoints = stagePoints.slice(0, -1);
+      }
+    }
+    if (pointsNorm.length < current.min_points) {
+      const next = { ...current, points_norm: pointsNorm, stage_points: stagePoints };
+      grumpCaptureStateRef.current = next;
+      setGrumpCapture(next);
+      setCommitMsg(`GRUMP surface capture needs at least ${current.min_points} points.`);
+      return true;
+    }
+    const published = grumpBridgeRef.current?.publish?.(
+      "geometry.captured",
+      {
+        request_event_id: current.request_event_id,
+        capture_tool: current.capture_tool,
+        sheet_id: current.sheet_id,
+        points_norm: pointsNorm,
+      },
+      "human",
+      `geometry-captured:${current.request_event_id}`,
+    );
+    if (!published) {
+      setCommitMsg("Couldn't send the GRUMP surface capture — the bridge is not ready.");
+      return true;
+    }
+    grumpCaptureStateRef.current = null;
+    setGrumpCapture(null);
+    setCommitMsg("GRUMP surface captured — calculating the proposal.");
     return true;
   }
 
@@ -7012,7 +7134,7 @@ export default function TakeoffCanvas() {
        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         <div ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas} onContextMenu={(e) => e.preventDefault()}
-          onDoubleClick={(e) => { if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); } else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape(); else if (tool === "select") editMarkupAt(e); }}
+          onDoubleClick={(e) => { if (grumpCaptureStateRef.current?.capture_tool === "polygon") { e.preventDefault(); completeGrumpCapture({ dropDoubleClick: true }); } else if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); } else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape(); else if (tool === "select") editMarkupAt(e); }}
           style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "var(--paper-cream)", cursor: grumpCapture ? "crosshair" : tool === "select" ? "default" : "none", touchAction: "none" }}>
           {/* aim crosshair (draw modes): the OS cursor is hidden on the canvas — the
               crosshair IS the cursor. Two crisp full-page hairlines riding the
@@ -7580,6 +7702,11 @@ export default function TakeoffCanvas() {
               <path ref={cloudRef} fill="rgba(37,99,235,.06)" stroke="#1f3fc7" strokeWidth={2 / tf.scale} strokeDasharray={`${5 / tf.scale} ${4 / tf.scale}`} style={{ display: "none" }} />
               <rect ref={highlightRef} fill="rgba(196,122,16,.18)" stroke="#c47a10" strokeWidth={2 / tf.scale} style={{ display: "none" }} />
               <path ref={hlPathRef} style={{ display: "none" }} />
+              {grumpCapture?.capture_tool === "polygon" && grumpCapture.stage_points.length >= 2 && (
+                <polygon points={grumpCapture.stage_points.map((p) => p.join(",")).join(" ")}
+                  fill={grumpCapture.stage_points.length >= 3 ? "rgba(31,63,199,.12)" : "none"}
+                  stroke="#1f3fc7" strokeWidth={2 / tf.scale} strokeDasharray={`${7 / tf.scale} ${4 / tf.scale}`} />
+              )}
               {grumpCapture?.stage_points?.map((p, i) => (
                 <path key={`grump-capture-${i}`} d={starPath(p[0], p[1], 5 / tf.scale)}
                   fill="#fff" stroke="#1f3fc7" strokeWidth={2 / tf.scale} />
@@ -7709,7 +7836,14 @@ export default function TakeoffCanvas() {
         <div style={{ position: "absolute", left: "50%", top: 12, transform: "translateX(-50%)", zIndex: Z.canvasUi, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, pointerEvents: "none" }}>
         {grumpCapture && (
           <div style={{ pointerEvents: "auto", display: "flex", alignItems: "center", gap: 10, padding: "7px 12px", background: "var(--paper-bright)", border: "1.5px solid var(--cobalt)", boxShadow: "var(--shadow-1)", fontSize: 12.5, color: "var(--ink)" }}>
-            <span><b>GRUMP · ligne</b> — cliquez {grumpCapture.points_norm.length ? "le deuxième point" : "le premier point"} sur {grumpCapture.sheet_id}</span>
+            <span>{grumpCapture.capture_tool === "line"
+              ? <><b>GRUMP · ligne</b> — cliquez {grumpCapture.points_norm.length ? "le deuxième point" : "le premier point"} sur {grumpCapture.sheet_id}</>
+              : <><b>GRUMP · surface</b> — {grumpCapture.points_norm.length} point(s) sur {grumpCapture.sheet_id}</>}</span>
+            {grumpCapture.capture_tool === "polygon" && (
+              <button onClick={() => completeGrumpCapture()} disabled={grumpCapture.points_norm.length < grumpCapture.min_points}
+                style={{ padding: "4px 10px", background: "var(--cobalt)", border: "1px solid var(--cobalt)", color: "var(--accent-contrast)", fontSize: 12, cursor: grumpCapture.points_norm.length < grumpCapture.min_points ? "not-allowed" : "pointer" }}>
+                Terminer</button>
+            )}
             <button onClick={cancelGrumpCapture}
               style={{ padding: "4px 10px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", color: "var(--ink-muted)", fontSize: 12, cursor: "pointer" }}>
               Annuler</button>

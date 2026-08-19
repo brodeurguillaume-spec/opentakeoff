@@ -47,7 +47,7 @@ export function shapeFacts(before, after, cmd) {
   return [];
 }
 
-export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_payload, _event) => {}, applyProposalFocus = async (_payload) => {}, applyGeometryCapture = async (_type, _payload, _event) => {}, getContext = /** @type {() => any} */ (() => null), onError = () => {}, windowLike = window, documentLike = document }) {
+export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_payload, _event) => {}, applyProposalFact = async (_type, _payload, _event) => {}, applyProposalFocus = async (_payload) => {}, applyGeometryCapture = async (_type, _payload, _event) => {}, getContext = /** @type {() => any} */ (() => null), onError = () => {}, windowLike = window, documentLike = document }) {
   const parentOrigin = bridgeParent(windowLike.location, documentLike.referrer);
   if (!parentOrigin || windowLike.parent === windowLike) return null;
   let sessionId = null;
@@ -55,6 +55,14 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
   const handled = new Set();
   const deferredProposals = new Map();
   const retryingProposals = new Set();
+  const deletedShapeIds = new Set();
+  const reviewedShapeTimestamps = new Map();
+  const editedShapes = new Map();
+  // Journal replay can deliver several proposals in the same turn. Applying
+  // them concurrently makes each import merge against the same pre-replay
+  // Canvas snapshot, so the last import can erase the shapes imported just
+  // before it. Keep proposal imports strictly ordered.
+  let proposalApplyChain = Promise.resolve();
 
   const post = (message) => windowLike.parent.postMessage({ source: "opentakeoff.grump", ...message }, parentOrigin);
 
@@ -75,11 +83,23 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
     return true;
   };
 
+  const enqueueCanvasMutation = (apply) => {
+    const run = proposalApplyChain.then(apply).then((value) => new Promise((resolve) => {
+      // Let React commit the preceding import before the next journal mutation
+      // reads the current Canvas callbacks/state.
+      setTimeout(() => resolve(value), 0);
+    }));
+    proposalApplyChain = run.catch(() => {});
+    return run;
+  };
+
+  const enqueueTakeoffProposal = (event) => enqueueCanvasMutation(() => applyTakeoffProposal(event));
+
   const retryDeferredProposals = () => {
     for (const [eventId, event] of deferredProposals) {
       if (retryingProposals.has(eventId)) continue;
       retryingProposals.add(eventId);
-      Promise.resolve(applyTakeoffProposal(event)).finally(() => retryingProposals.delete(eventId));
+      enqueueTakeoffProposal(event).finally(() => retryingProposals.delete(eventId));
     }
   };
 
@@ -93,7 +113,38 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
   const applyTakeoffProposal = async (event) => {
     if (handled.has(event.event_id)) return;
     try {
-      await applyTakeoff(event.payload?.takeoff, event);
+      const takeoff = event.payload?.takeoff;
+      const summaryIds = Array.isArray(event.payload?.proposal?.shape_ids)
+        ? event.payload.proposal.shape_ids
+        : (event.payload?.shape_id ? [event.payload.shape_id] : []);
+      // export_takeoff is a full-project snapshot. A proposal replay must only
+      // import the shapes owned by that proposal; otherwise a later snapshot
+      // can resurrect an unrelated shape that the human already rejected.
+      const scopedTakeoff = takeoff && summaryIds.length
+        ? (() => {
+            const wanted = new Set(summaryIds);
+            const proposalShapes = (takeoff.shapes || [])
+              .filter((shape) => wanted.has(shape.id) && !deletedShapeIds.has(shape.id))
+              .map((shape) => editedShapes.get(shape.id) || shape)
+              .map((shape) => reviewedShapeTimestamps.has(shape.id)
+                ? {
+                    ...shape,
+                    origin: {
+                      ...shape.origin,
+                      reviewed: true,
+                      accepted_ts: reviewedShapeTimestamps.get(shape.id),
+                    },
+                  }
+                : shape);
+            const conditionIds = new Set(proposalShapes.map((shape) => shape.condition_id));
+            return {
+              ...takeoff,
+              shapes: proposalShapes,
+              conditions: (takeoff.conditions || []).filter((condition) => conditionIds.has(condition.id)),
+            };
+          })()
+        : takeoff;
+      await applyTakeoff(scopedTakeoff, event);
       handled.add(event.event_id);
       deferredProposals.delete(event.event_id);
       publish("canvas.takeoff.applied", {
@@ -137,7 +188,33 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
       if (handled.has(event.event_id)) return;
       handled.add(event.event_id);
       try {
-        await applyProposalAction(event.payload || {}, event);
+        await enqueueCanvasMutation(() => applyProposalAction(event.payload || {}, event));
+      } catch (error) {
+        onError(String(error?.message || error));
+      }
+      return;
+    }
+    if (["shape.reviewed", "shape.review.undone", "shape.deleted", "shape.edited"].includes(event.type)) {
+      if (handled.has(event.event_id)) return;
+      handled.add(event.event_id);
+      const shapeIds = Array.isArray(event.payload?.shape_ids) ? event.payload.shape_ids : [];
+      if (event.type === "shape.deleted") {
+        for (const shapeId of shapeIds) {
+          deletedShapeIds.add(shapeId);
+          editedShapes.delete(shapeId);
+          reviewedShapeTimestamps.delete(shapeId);
+        }
+      } else if (event.type === "shape.reviewed") {
+        for (const shapeId of shapeIds) reviewedShapeTimestamps.set(shapeId, event.timestamp || new Date().toISOString());
+      } else if (event.type === "shape.review.undone") {
+        for (const shapeId of shapeIds) reviewedShapeTimestamps.delete(shapeId);
+      } else if (event.type === "shape.edited") {
+        for (const shape of Array.isArray(event.payload?.shapes) ? event.payload.shapes : []) {
+          if (shape?.id) editedShapes.set(shape.id, shape);
+        }
+      }
+      try {
+        await enqueueCanvasMutation(() => applyProposalFact(event.type, event.payload || {}, event));
       } catch (error) {
         onError(String(error?.message || error));
       }
@@ -154,7 +231,7 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
       return;
     }
     if (data.kind !== "takeoff.proposed" || handled.has(event.event_id)) return;
-    await applyTakeoffProposal(event);
+    await enqueueTakeoffProposal(event);
   };
 
   windowLike.addEventListener("message", receive);
