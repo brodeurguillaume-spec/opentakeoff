@@ -47,7 +47,7 @@ export function shapeFacts(before, after, cmd) {
   return [];
 }
 
-export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_payload, _event) => {}, applyProposalFocus = async (_payload) => {}, getContext = /** @type {() => any} */ (() => null), onError = () => {}, windowLike = window, documentLike = document }) {
+export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_payload, _event) => {}, applyProposalFocus = async (_payload) => {}, applyGeometryCapture = async (_type, _payload, _event) => {}, getContext = /** @type {() => any} */ (() => null), onError = () => {}, windowLike = window, documentLike = document }) {
   const parentOrigin = bridgeParent(windowLike.location, documentLike.referrer);
   if (!parentOrigin || windowLike.parent === windowLike) return null;
   let sessionId = null;
@@ -101,6 +101,16 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
       handled.add(event.event_id);
       try {
         await applyProposalAction(event.payload || {}, event);
+      } catch (error) {
+        onError(String(error?.message || error));
+      }
+      return;
+    }
+    if (["geometry.capture.requested", "geometry.captured", "geometry.capture.cancelled"].includes(event.type)) {
+      if (handled.has(event.event_id)) return;
+      handled.add(event.event_id);
+      try {
+        await applyGeometryCapture(event.type, event.payload || {}, event);
       } catch (error) {
         onError(String(error?.message || error));
       }

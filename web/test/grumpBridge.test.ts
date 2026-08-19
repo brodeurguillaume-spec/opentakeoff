@@ -154,3 +154,43 @@ test("bridge announces the visible document context on session and sheet changes
   assert.equal(sent.at(-1).payload.document_name, "S101.pdf");
   bridge!.stop();
 });
+
+test("bridge replays a durable geometry request and its terminal capture in order", async () => {
+  const received: any[] = [];
+  let listener: any = null;
+  const parent = { postMessage: () => {} };
+  const windowLike: any = {
+    location: { search: "?grumpBridge=1" }, parent,
+    addEventListener: (_name: string, fn: any) => { listener = fn; },
+    removeEventListener: () => {},
+  };
+  const bridge = createGrumpBridge({
+    windowLike,
+    documentLike: { referrer: "http://127.0.0.1:8765/" } as Document,
+    applyTakeoff: async () => {},
+    applyGeometryCapture: async (type: string, payload: any) => { received.push([type, payload]); },
+  });
+  await listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: { source: "grump.gateway", kind: "session", session_id: "s", revision: 1 },
+  });
+  const requested = {
+    session_id: "s", event_id: "capture:chat-1", revision: 2,
+    type: "geometry.capture.requested",
+    payload: { request_event_id: "chat-1", capture_tool: "line", point_count: 2, sheet_id: "A101.pdf" },
+  };
+  const captured = {
+    session_id: "s", event_id: "geometry-captured:capture:chat-1", revision: 3,
+    type: "geometry.captured",
+    payload: { request_event_id: "capture:chat-1", capture_tool: "line", sheet_id: "A101.pdf", points_norm: [[0.1, 0.2], [0.3, 0.4]] },
+  };
+  for (const event of [requested, requested, captured, captured]) await listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: { source: "grump.gateway", kind: "gateway.event", event },
+  });
+  assert.deepEqual(received, [
+    ["geometry.capture.requested", requested.payload],
+    ["geometry.captured", captured.payload],
+  ]);
+  bridge!.stop();
+});
