@@ -53,6 +53,8 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
   let sessionId = null;
   let revision = 0;
   const handled = new Set();
+  const deferredProposals = new Map();
+  const retryingProposals = new Set();
 
   const post = (message) => windowLike.parent.postMessage({ source: "opentakeoff.grump", ...message }, parentOrigin);
 
@@ -73,10 +75,45 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
     return true;
   };
 
+  const retryDeferredProposals = () => {
+    for (const [eventId, event] of deferredProposals) {
+      if (retryingProposals.has(eventId)) continue;
+      retryingProposals.add(eventId);
+      Promise.resolve(applyTakeoffProposal(event)).finally(() => retryingProposals.delete(eventId));
+    }
+  };
+
   const publishContext = (payload = getContext()) => {
     if (!sessionId || !payload || typeof payload !== "object") return false;
     post({ kind: "canvas.context", session_id: sessionId, payload });
+    retryDeferredProposals();
     return true;
+  };
+
+  const applyTakeoffProposal = async (event) => {
+    if (handled.has(event.event_id)) return;
+    try {
+      await applyTakeoff(event.payload?.takeoff, event);
+      handled.add(event.event_id);
+      deferredProposals.delete(event.event_id);
+      publish("canvas.takeoff.applied", {
+        proposal_event_id: event.event_id,
+        shape_id: event.payload?.shape_id,
+      }, "canvas", `canvas-applied:${event.event_id}`);
+    } catch (error) {
+      if (error?.retryable === true) {
+        deferredProposals.set(event.event_id, event);
+        return;
+      }
+      handled.add(event.event_id);
+      deferredProposals.delete(event.event_id);
+      const messageText = String(error?.message || error);
+      onError(messageText);
+      publish("canvas.takeoff.rejected", {
+        proposal_event_id: event.event_id,
+        message: messageText,
+      }, "canvas", `canvas-rejected:${event.event_id}`);
+    }
   };
 
   const receive = async (message) => {
@@ -117,21 +154,7 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
       return;
     }
     if (data.kind !== "takeoff.proposed" || handled.has(event.event_id)) return;
-    handled.add(event.event_id);
-    try {
-      await applyTakeoff(event.payload?.takeoff, event);
-      publish("canvas.takeoff.applied", {
-        proposal_event_id: event.event_id,
-        shape_id: event.payload?.shape_id,
-      }, "canvas", `canvas-applied:${event.event_id}`);
-    } catch (error) {
-      const messageText = String(error?.message || error);
-      onError(messageText);
-      publish("canvas.takeoff.rejected", {
-        proposal_event_id: event.event_id,
-        message: messageText,
-      }, "canvas", `canvas-rejected:${event.event_id}`);
-    }
+    await applyTakeoffProposal(event);
   };
 
   windowLike.addEventListener("message", receive);
@@ -140,6 +163,7 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
     parentOrigin,
     publish,
     publishContext,
+    retryDeferredProposals,
     clearProposalFocus: () => {
       if (!sessionId) return false;
       post({ kind: "proposal.focus.cleared", session_id: sessionId });

@@ -762,6 +762,7 @@ export default function TakeoffCanvas() {
   const toolRef = useRef(tool);
   const proposalRef = useRef(proposal);
   const hydrated = useRef(false);
+  const [projectHydrated, setProjectHydrated] = useState(false);
   // Autosave stays holstered until a user-originated edit. hydrate() flips every
   // autosave dep to a fresh identity, so the effect fires once on the post-load
   // render with no edit behind it; that lone run arms this and returns instead of
@@ -951,7 +952,7 @@ export default function TakeoffCanvas() {
   };
   useEffect(() => {
     grumpBridgeRef.current?.publishContext?.(grumpCanvasContextRef.current);
-  }, [sheetKey, focusKey, sheetGroup, stitches]);
+  }, [sheetKey, focusKey, sheetGroup, stitches, sheets, status, projectHydrated]);
   // docEpoch re-keys groupSig when a re-dropped file's BYTES changed under the
   // same name (store.addPdf → revised): the render effect keyed on groupSig is
   // the one path that resets every cache (compositor, pageObjs, snap grids) and
@@ -1461,6 +1462,7 @@ export default function TakeoffCanvas() {
       if (off) return;
       hydrate(a);
       hydrated.current = true;
+      setProjectHydrated(true);
     }).catch((e) => {
       // stale-tab failure: leave autosave DISARMED (hydrated stays false). If a
       // blocked tab recovered here with hydrated=true, its still-empty defaults
@@ -2046,9 +2048,16 @@ export default function TakeoffCanvas() {
   // is already true, so the merged payload autosaves like any other edit.
   const applyAgentTakeoff = (candidate, gatewayEvent = null) => {
     const imported = parseTakeoffImport(JSON.stringify(candidate));
+    if (!projectHydrated) {
+      const error = new Error("Couldn't sync takeoff: the project is still loading.");
+      error.retryable = true;
+      throw error;
+    }
     const expectedFile = gatewayEvent?.payload?.document?.name;
     if (expectedFile && !sheets.some((sheet) => sheet.name === expectedFile)) {
-      throw new Error(`Couldn't sync takeoff: open ${expectedFile} in this project first.`);
+      const error = new Error(`Couldn't sync takeoff: open ${expectedFile} in this project first.`);
+      error.retryable = true;
+      throw error;
     }
     const { payload, note } = mergeTakeoffImport(buildPayload(), imported, sheets.map((s) => s.name));
     restoreSavedPayload(payload);
@@ -5348,18 +5357,6 @@ export default function TakeoffCanvas() {
     return { committed: made.length, total_lf, withheld, between: [a.tag, b.tag], onto: target.finish_tag };
   }
 
-  // ── the accept gate, for shapes already IN the data ─────────────────────────
-  // An imported MCP takeoff arrives committed but unreviewed (origin.reviewed
-  // === false) — those render dashed pencil and gate the Accept pill. Accept
-  // routes through the `review` command (ONE undo entry), which flips reviewed
-  // + stamps accepted_ts and nothing else: affirmation, not an edit. Rejecting
-  // one is just deleting it — select and Delete, like any shape.
-  const pendingCommitted = useMemo(() => visibleShapes.filter((s) => s.origin?.reviewed === false), [visibleShapes]);
-  function acceptPendingShapes() {
-    if (!pendingCommitted.length) return;
-    dispatchShape({ type: "review", ids: pendingCommitted.map((s) => s.id) });
-    setCommitMsg(`Accepted ${pendingCommitted.length} proposed shape${pendingCommitted.length === 1 ? "" : "s"} — pencil is now ink.`);
-  }
   const rejectAllAgentProposals = () => setAgentProposals([]);
 
   // ── the run ────────────────────────────────────────────────────────────────
@@ -7707,9 +7704,8 @@ export default function TakeoffCanvas() {
         )}
         </div>
         )}
-        {/* top-center stack: accept pill + dictation chip share one flex column
-            so simultaneous voice + pending proposals can never overlap. */}
-        {(grumpCapture || voiceChip || pendingCommitted.length > 0) && (
+        {/* top-center stack: GRUMP capture and dictation share one flex column. */}
+        {(grumpCapture || voiceChip) && (
         <div style={{ position: "absolute", left: "50%", top: 12, transform: "translateX(-50%)", zIndex: Z.canvasUi, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, pointerEvents: "none" }}>
         {grumpCapture && (
           <div style={{ pointerEvents: "auto", display: "flex", alignItems: "center", gap: 10, padding: "7px 12px", background: "var(--paper-bright)", border: "1.5px solid var(--cobalt)", boxShadow: "var(--shadow-1)", fontSize: 12.5, color: "var(--ink)" }}>
@@ -7718,16 +7714,6 @@ export default function TakeoffCanvas() {
               style={{ padding: "4px 10px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", color: "var(--ink-muted)", fontSize: 12, cursor: "pointer" }}>
               Annuler</button>
           </div>
-        )}
-        {/* accept pill — visible while committed-but-unreviewed shapes (an
-            imported MCP takeoff) are on the visible sheets; they render dashed
-            pencil until accepted. One click, one undo entry. */}
-        {pendingCommitted.length > 0 && (
-          <button onClick={acceptPendingShapes}
-            title={`${pendingCommitted.length} machine-proposed shape${pendingCommitted.length === 1 ? "" : "s"} render${pendingCommitted.length === 1 ? "s" : ""} dashed pending your review. Accept makes them ink (⌘Z undoes); to reject one, select it and press Delete.`}
-            style={{ pointerEvents: "auto", padding: "6px 14px", background: "var(--paper-bright)", border: "1.5px dashed var(--cobalt)", boxShadow: "var(--shadow-1)", fontSize: 12.5, fontWeight: 600, color: "var(--cobalt)", cursor: "pointer" }}>
-            Accept {pendingCommitted.length} proposed shape{pendingCommitted.length === 1 ? "" : "s"}
-          </button>
         )}
         {/* live dictation chip (RFC #59 recognizer): top-center, fixed — NOT
             cursor-following, the cursor is busy aiming for deixis. Shows the

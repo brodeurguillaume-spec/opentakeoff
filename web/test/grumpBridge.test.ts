@@ -72,6 +72,55 @@ test("bridge applies a proposal once and emits a correlated Canvas fact", async 
   bridge.stop();
 });
 
+test("bridge defers a proposal until the PDF registry is ready, then applies it once", async () => {
+  const sent: any[] = [];
+  let listener: any = null;
+  let ready = false;
+  let applied = 0;
+  const parent = { postMessage: (message: any) => sent.push(message) };
+  const windowLike: any = {
+    location: { search: "?grumpBridge=1" }, parent,
+    addEventListener: (_name: string, fn: any) => { listener = fn; },
+    removeEventListener: () => {},
+  };
+  const bridge = createGrumpBridge({
+    windowLike,
+    documentLike: { referrer: "http://127.0.0.1:8765/" } as Document,
+    applyTakeoff: async () => {
+      if (!ready) {
+        const error: any = new Error("PDF registry not ready");
+        error.retryable = true;
+        throw error;
+      }
+      applied++;
+    },
+  });
+  await listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: { source: "grump.gateway", kind: "session", session_id: "s", revision: 1 },
+  });
+  const proposal = {
+    session_id: "s", event_id: "proposal-reload", revision: 2,
+    payload: { shape_id: "line-1", takeoff: { schema: "opentakeoff.takeoff_canvas.v1" } },
+  };
+  await listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: { source: "grump.gateway", kind: "takeoff.proposed", event: proposal },
+  });
+  assert.equal(applied, 0);
+  assert.equal(sent.some((message) => message.event?.type === "canvas.takeoff.rejected"), false);
+
+  ready = true;
+  bridge!.publishContext({ document_name: "sample-finish-plan.pdf", sheet_id: "AF101" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  bridge!.retryDeferredProposals();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(applied, 1);
+  assert.equal(sent.filter((message) => message.event?.type === "canvas.takeoff.applied").length, 1);
+  bridge!.stop();
+});
+
 test("bridge applies each journaled proposal action once", async () => {
   const sent: any[] = [];
   const actions: any[] = [];
