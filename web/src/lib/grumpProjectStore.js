@@ -2,6 +2,7 @@
 // IndexedDB stays the fast Canvas cache; the gateway writes the portable copy.
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
+const TAKEOFF_SCHEMA = "opentakeoff.takeoff_canvas.v1";
 
 export function grumpProjectIdFromUrl(locationLike = window.location) {
   try {
@@ -122,12 +123,17 @@ export function createGrumpProjectStore(
   }
 
   async function saveAnnotations(payload) {
-    await base.saveAnnotations(payload);
+    // The plain IndexedDB store injects its schema while writing, but the
+    // gateway receives the object before that local normalization. Normalize
+    // once at this boundary so browser cache and durable project JSON persist
+    // the exact same takeoff document.
+    const persisted = { ...payload, schema: TAKEOFF_SCHEMA };
+    await base.saveAnnotations(persisted);
     const response = await fetchLike(projectUrl("/takeoff"), {
       ...options,
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(persisted),
     });
     if (!response.ok) throw await responseError(response, "Couldn't mirror the takeoff to the project folder.");
   }
@@ -179,7 +185,18 @@ export function createGrumpProjectStore(
     ...base,
     async listSheets() {
       await hydratePlans();
-      return base.listSheets();
+      const rows = await base.listSheets();
+      return Promise.all(rows.map(async (row) => {
+        const revisions = typeof base.listPdfRevisions === "function"
+          ? await base.listPdfRevisions(row.name)
+          : [];
+        const current = revisions.find((revision) => revision.current) || revisions[0];
+        return {
+          ...row,
+          sha256: typeof current?.hash === "string" ? current.hash : null,
+          document_revision: Number.isInteger(current?.rev) ? current.rev : null,
+        };
+      }));
     },
     async loadPdfData(name) {
       await hydratePlans();

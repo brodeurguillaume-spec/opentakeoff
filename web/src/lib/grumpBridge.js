@@ -38,6 +38,13 @@ export function shapeFacts(before, after, cmd) {
     return deleted.length ? [{ type: "shape.deleted", payload: { shape_ids: deleted } }] : [];
   }
 
+  if (cmd?.type === "add" && cmd.restore === true) {
+    const restored = (cmd.shapes || [])
+      .map((shape) => current.get(shape?.id))
+      .filter((shape) => machine(shape) && !previous.has(shape.id));
+    return restored.length ? [{ type: "shape.restored", payload: { shapes: restored } }] : [];
+  }
+
   if (["geom", "reassign", "label"].includes(cmd?.type)) {
     const ids = cmd.id ? [cmd.id] : (cmd.ids || cmd.restore || []).map((row) => typeof row === "string" ? row : row.id);
     const changed = ids.map((shapeId) => current.get(shapeId)).filter(machine);
@@ -194,7 +201,7 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
       }
       return;
     }
-    if (["shape.reviewed", "shape.review.undone", "shape.deleted", "shape.edited"].includes(event.type)) {
+    if (["shape.reviewed", "shape.review.undone", "shape.deleted", "shape.edited", "shape.restored"].includes(event.type)) {
       if (handled.has(event.event_id)) return;
       handled.add(event.event_id);
       const shapeIds = Array.isArray(event.payload?.shape_ids) ? event.payload.shape_ids : [];
@@ -211,6 +218,17 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
       } else if (event.type === "shape.edited") {
         for (const shape of Array.isArray(event.payload?.shapes) ? event.payload.shapes : []) {
           if (shape?.id) editedShapes.set(shape.id, shape);
+        }
+      } else if (event.type === "shape.restored") {
+        for (const shape of Array.isArray(event.payload?.shapes) ? event.payload.shapes : []) {
+          if (!shape?.id) continue;
+          deletedShapeIds.delete(shape.id);
+          editedShapes.set(shape.id, shape);
+          if (shape.origin?.reviewed === true) {
+            reviewedShapeTimestamps.set(shape.id, shape.origin.accepted_ts || event.timestamp || new Date().toISOString());
+          } else {
+            reviewedShapeTimestamps.delete(shape.id);
+          }
         }
       }
       try {

@@ -19,6 +19,18 @@ const doc = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+const mapRegion = (id: string, over: Record<string, unknown> = {}) => ({
+  id,
+  sheet_id: "va.pdf",
+  name: "Plan principal",
+  kind: "plan",
+  geometry: { type: "polygon", verts_norm: [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4], [0.1, 0.4]] },
+  purposes: ["semantic"],
+  revision: 1,
+  review: { status: "proposed" },
+  ...over,
+});
+
 test("parse: rejects non-JSON and wrong schemas, passes the real one", () => {
   assert.throws(() => parseTakeoffImport("{nope"), /not valid JSON/);
   assert.throws(() => parseTakeoffImport(JSON.stringify({ schema: "something.else" })), /not a takeoff export/);
@@ -38,14 +50,16 @@ test("empty project: import replaces wholesale (seeded conditions are not work)"
 test("replace keeps the operator's open view when the export carries none", () => {
   // An MCP export has empty sheet_tabs/groups — adopting them would bounce
   // the operator from their open sheet to the gallery mid-import.
-  const current = { shapes: [], markups: [], conditions: [], sheets: [], sheet_tabs: ["va.pdf"], sheet_group: ["va.pdf", "va.pdf#2"], last_group: ["va.pdf", "va.pdf#2"] };
+  const current = { shapes: [], markups: [], conditions: [], sheets: [], sheet_tabs: ["va.pdf"], active_sheet: "va.pdf", sheet_group: ["va.pdf", "va.pdf#2"], last_group: ["va.pdf", "va.pdf#2"] };
   const { payload, note } = mergeTakeoffImport(current, doc({ sheet_tabs: [], sheet_group: [], last_group: [] }));
   assert.equal(note.replaced, true);
   assert.deepEqual(payload.sheet_tabs, ["va.pdf"]);
+  assert.equal(payload.active_sheet, "va.pdf");
   assert.deepEqual(payload.sheet_group, ["va.pdf", "va.pdf#2"]);
   // …but a NON-empty imported view is real state and wins on replace
-  const explicit = mergeTakeoffImport(current, doc({ sheet_tabs: ["va.pdf#3"] }));
+  const explicit = mergeTakeoffImport(current, doc({ sheet_tabs: ["va.pdf#3"], active_sheet: "va.pdf#3" }));
   assert.deepEqual(explicit.payload.sheet_tabs, ["va.pdf#3"]);
+  assert.equal(explicit.payload.active_sheet, "va.pdf#3");
 });
 
 test("merge: same finish tag joins the operator's condition — no duplicate, shapes remapped", () => {
@@ -97,14 +111,68 @@ test("scales: the operator's calibration wins per sheet; missing sheets adopt th
   assert.equal(note.scales_adopted, 1);
 });
 
+test("regions: operator map wins by stable id, new regions append, re-import is idempotent", () => {
+  const current = {
+    shapes: [{ id: "s0", sheet_id: "va.pdf", condition_id: "x" }], markups: [], conditions: [], sheets: [],
+    regions: [mapRegion("region:mine", { name: "Nom humain", review: { status: "confirmed" } })],
+  };
+  const imported = doc({ regions: [
+    mapRegion("region:mine", { name: "Nom agent", review: { status: "proposed" } }),
+    mapRegion("region:new", { name: "Coupe 1", kind: "section" }),
+  ] });
+  const first = mergeTakeoffImport(current, imported);
+  assert.equal(first.note.regions_added, 1);
+  assert.deepEqual(first.payload.regions.map((item: { id: string }) => item.id), ["region:mine", "region:new"]);
+  assert.equal(first.payload.regions[0].name, "Nom humain");
+  assert.equal(first.payload.regions[0].review.status, "confirmed");
+  const again = mergeTakeoffImport(first.payload, imported);
+  assert.equal(again.note.regions_added, 0);
+  assert.equal(again.payload.regions.length, 2);
+});
+
+test("regions alone are operator work and prevent a clean-replace import", () => {
+  const current = { shapes: [], markups: [], approvals: [], conditions: [], sheets: [], regions: [mapRegion("region:mine")] };
+  const { payload, note } = mergeTakeoffImport(current, doc({ regions: [mapRegion("region:agent")] }));
+  assert.equal(note.replaced, false);
+  assert.deepEqual(payload.regions.map((item: { id: string }) => item.id), ["region:mine", "region:agent"]);
+});
+
+test("regions are sanitized on import before they enter the Canvas payload", () => {
+  const current = { shapes: [{ id: "s0", sheet_id: "va.pdf", condition_id: "x" }], markups: [], conditions: [], sheets: [] };
+  const imported = doc({ regions: [mapRegion("region:ok"), { id: "bad", sheet_id: "va.pdf" }] });
+  const { payload, note } = mergeTakeoffImport(current, imported);
+  assert.equal(note.regions_added, 1);
+  assert.deepEqual(payload.regions.map((item: { id: string }) => item.id), ["region:ok"]);
+});
+
+test("scales: a confirmed operator calibration also wins in the clean-replace path", () => {
+  const current = {
+    shapes: [], markups: [], approvals: [], conditions: [],
+    sheets: [{ sheet_id: "va.pdf", units_per_px: 0.07, scale_source: "manual" }],
+  };
+  const imported = doc({
+    sheets: [
+      { sheet_id: "va.pdf", units_per_px: 0.05, scale_source: "agent", scale_confirmed: false },
+      { sheet_id: "va.pdf#2", units_per_px: 0.05, scale_source: "agent", scale_confirmed: false },
+    ],
+  });
+  const { payload, note } = mergeTakeoffImport(current, imported);
+  assert.deepEqual(payload.sheets, [
+    { sheet_id: "va.pdf", units_per_px: 0.07, scale_source: "manual" },
+    { sheet_id: "va.pdf#2", units_per_px: 0.05, scale_source: "agent", scale_confirmed: false },
+  ]);
+  assert.equal(note.scales_adopted, 1);
+});
+
 test("workspace fields stay the operator's on merge: name, tabs, groups", () => {
   const current = {
-    project_name: "My Bid", sheet_tabs: ["va.pdf#3"], sheet_group: ["va.pdf", "va.pdf#2"],
+    project_name: "My Bid", sheet_tabs: ["va.pdf#3"], active_sheet: "va.pdf#3", sheet_group: ["va.pdf", "va.pdf#2"],
     shapes: [{ id: "s0", sheet_id: "va.pdf", condition_id: "x" }], markups: [], conditions: [], sheets: [],
   };
   const { payload } = mergeTakeoffImport(current, doc());
   assert.equal(payload.project_name, "My Bid");
   assert.deepEqual(payload.sheet_tabs, ["va.pdf#3"]);
+  assert.equal(payload.active_sheet, "va.pdf#3");
   assert.deepEqual(payload.sheet_group, ["va.pdf", "va.pdf#2"]);
 });
 

@@ -90,6 +90,23 @@ test("disk takeoff is canonical and rehydrates IndexedDB", async () => {
   assert.deepEqual(saved, disk);
 });
 
+test("disk mirror adds the takeoff schema before sending a raw canvas payload", async () => {
+  let localSave: any = null;
+  let uploaded: any = null;
+  const base: any = {
+    saveAnnotations: async (payload: any) => { localSave = payload; },
+  };
+  const store = createGrumpProjectStore(base, "bid-42", async (_url: RequestInfo | URL, init?: RequestInit) => {
+    uploaded = JSON.parse(String(init?.body));
+    return response({ saved: true });
+  });
+
+  await store.saveAnnotations({ conditions: [], shapes: [] } as any);
+
+  assert.equal(localSave.schema, "opentakeoff.takeoff_canvas.v1");
+  assert.equal(uploaded.schema, "opentakeoff.takeoff_canvas.v1");
+});
+
 test("plan hydration pushes browser-only PDFs and restores disk-only PDFs", async () => {
   const pdfs = new Map<string, Uint8Array>([["local.pdf", new TextEncoder().encode("%PDF-local")]]);
   const uploads: string[] = [];
@@ -112,6 +129,28 @@ test("plan hydration pushes browser-only PDFs and restores disk-only PDFs", asyn
   const store = createGrumpProjectStore(base, "bid-42", fetchLike);
   assert.deepEqual((await store.listSheets()).map((row: any) => row.name).sort(), ["disk.pdf", "local.pdf"]);
   assert.deepEqual(uploads, ["local.pdf"]);
+});
+
+test("GRUMP sheet registry exposes the current browser PDF hash and revision", async () => {
+  const digest = "a".repeat(64);
+  const base: any = {
+    listSheets: async () => [{ name: "A101.pdf" }],
+    loadPdfData: async () => new TextEncoder().encode("%PDF-a101"),
+    listPdfRevisions: async () => [{ rev: 4, hash: digest, current: true }],
+  };
+  const fetchLike: any = async (url: string) => {
+    if (url === "/api/project/plans") {
+      return response({ project_id: "bid-42", plans: [{ name: "A101.pdf" }] });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  };
+  const store = createGrumpProjectStore(base, "bid-42", fetchLike);
+
+  assert.deepEqual(await store.listSheets(), [{
+    name: "A101.pdf",
+    sha256: digest,
+    document_revision: 4,
+  }]);
 });
 
 test("manual takeoff revisions are mirrored with the project snapshot scope", async () => {

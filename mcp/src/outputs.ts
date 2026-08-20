@@ -85,6 +85,8 @@ export const oneClickOutput = {
   verts: z.array(point).optional().describe("Traced polygon vertices (image px), when return_verts was set"),
   area_sf: z.number().optional().describe("Scaled mode: traced area in SF"),
   perimeter_lf: z.number().optional().describe("Scaled mode: traced perimeter in LF"),
+  scale_source: z.enum(["region", "sheet"]).optional().describe("Scaled mode: whether the confirmed scale came from a Project Map zone or the sheet fallback"),
+  scale_region_id: z.string().optional().describe("Scaled mode: exact confirmed scale-zone id, when region-backed"),
   shape_id: z.string().optional().describe("Scaled mode: id of the committed shape, when condition was passed"),
   area_px2: z.number().optional().describe("Preview mode (no scale): raw area in px²"),
   perimeter_px: z.number().optional().describe("Preview mode (no scale): raw perimeter in px"),
@@ -145,6 +147,8 @@ export const measurePolygonOutput = {
   area_sf: z.number(),
   perimeter_lf: z.number(),
   nverts: z.number().int(),
+  scale_source: z.enum(["region", "sheet"]),
+  scale_region_id: z.string().optional().describe("Exact confirmed scale-zone id, when region-backed"),
   shape_id: z.string().optional().describe("Present when condition was passed and the shape committed"),
   warning: z.string().optional().describe("Mixed-scale warning (#153): a scale note disagreeing with the sheet's sits in the measured region — verify before trusting these numbers"),
 };
@@ -156,6 +160,8 @@ export const measureSurfaceOutput = {
   length_lf: z.number().describe("The traced run's open length"),
   area_sf: z.number().describe("length_lf × height_ft — the wall SF committed"),
   npts: z.number().int(),
+  scale_source: z.enum(["region", "sheet"]),
+  scale_region_id: z.string().optional().describe("Exact confirmed scale-zone id, when region-backed"),
   shape_id: z.string(),
 };
 
@@ -243,6 +249,8 @@ export const symbolSweepOutput = {
 export const measureLineOutput = {
   length_lf: z.number(),
   npts: z.number().int(),
+  scale_source: z.enum(["region", "sheet"]),
+  scale_region_id: z.string().optional().describe("Exact confirmed scale-zone id, when region-backed"),
   shape_id: z.string().optional().describe("Present when condition was passed and the shape committed"),
 };
 
@@ -309,9 +317,11 @@ export const exportTakeoffOutput = {
   }).passthrough()),
   markups: z.array(z.unknown()),
   approvals: z.array(z.unknown()).optional().describe("Approval-family records (#176) — the estimator's APPROVED seals and the agent's verdict marks {id, actor, ts, sheet_id, at:[nx,ny], shape_id?, text?}. Present only when any exist (the canvas payload's own convention), so a verdict-free export stays byte-identical"),
+  regions: z.array(z.unknown()).optional().describe("Persistent project-map regions: normalized polygon, semantic/scale/analysis purposes, evidence, links, confidence and field-level human review"),
   sheet_group: z.array(z.unknown()),
   last_group: z.array(z.unknown()),
   sheet_tabs: z.array(z.unknown()),
+  active_sheet: z.string().nullable().optional(),
   sheet_levels: z.object({}).passthrough(),
 };
 
@@ -324,6 +334,7 @@ export const importTakeoffOutput = {
   conditions_merged: z.number().int().describe("Imported conditions that joined an existing finish tag (its knobs won)"),
   conditions_added: z.number().int(),
   scales_adopted: z.number().int().describe("Sheets whose calibration came from the file (this session's own always wins)"),
+  regions_added: z.number().int().describe("New stable-id project-map regions appended; an existing operator region always wins"),
   unknown_files: z.array(z.string()).describe("Files referenced by imported shapes that this document doesn't have — they count in totals but can't be viewed here"),
   rules_imported: z.number().int().describe("Correction rules (#88) that arrived with the file — apply_rules re-runs them"),
   shapes_total: z.number().int(),
@@ -800,6 +811,8 @@ export const annotateOutput = {
   condition: z.string(),
   condition_id: z.string(),
   length_lf: z.number().optional().describe("Dimension only: the measured length (real feet) the annotation will label itself with"),
+  scale_source: z.enum(["region", "sheet"]).optional().describe("Dimension only: scale context used for the snapshotted length"),
+  scale_region_id: z.string().optional().describe("Dimension only: exact confirmed scale-zone id, when region-backed"),
   note: z.string(),
 };
 

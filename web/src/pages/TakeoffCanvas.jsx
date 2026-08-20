@@ -59,6 +59,8 @@ import { detectCandidateRule, buildRuleFromSeed, applyRuleToProject } from "../l
 import { deriveTransitionRuns, transitionRefusal } from "../lib/transitions";
 import { conditionTotals, verticalWallSf } from "../lib/totals.js";
 import { shapesInZone } from "../lib/zone.js";
+import { applyRegionCommand, mintRegionId, sanitizeRegions } from "../lib/regions";
+import { resolveRegionScale } from "../lib/regionScale";
 import { sanitizeSheetLevels } from "../lib/sheetLevels.js";
 import { sanitizeConditionColumns, sanitizeConditionAttrs, renameColumnValue, columnLabel } from "../lib/conditionColumns.js";
 import { sanitizeShapeLabels, sanitizeShapeLabelsOnShapes, renameShapeLabel, shapeLabelValue } from "../lib/shapeLabels.js";
@@ -88,7 +90,7 @@ import { computeRollTakeoff, seamLfByShape } from "../lib/rollTakeoff.js";
 // pass through. AiSettings is the config surface for the ai.js seam.
 import AgentPanel from "../components/AgentPanel.jsx";
 import AiSettings from "../components/AiSettings.jsx";
-import { AGENT_TOOL_DEFS, executeAgentTool, agentScaleGate } from "../lib/agentTools.js";
+import { AGENT_TOOL_DEFS, executeAgentTool } from "../lib/agentTools.js";
 import { runAgentLoop } from "../lib/agentLoop.js";
 import { runVoiceCommand, isAgentHandoffTrigger, shouldOfferAgentHandoff } from "../lib/voiceActions";
 import { createVoiceRecognizerClient } from "../lib/voiceRecognizerClient";
@@ -264,6 +266,13 @@ export default function TakeoffCanvas() {
   const [alignPt, setAlignPt] = useState(null);       // stitch-align first click (stage px) — ephemeral, never persisted
   const [zoneCheck, setZoneCheck] = useState(null);   // ephemeral zone-check region {key, pts (norm)} — never persisted (buildPayload doesn't read it)
   const [zoneExpand, setZoneExpand] = useState(null); // zone panel: condition id with materials expanded
+  // Persistent Project Map regions. They remain distinct from Zone check:
+  // Zone check is a temporary quantity query; map-region is durable project
+  // structure with its own selection/editor and shared undo history.
+  const [regions, setRegions] = useState([]);
+  const [selectedRegionId, setSelectedRegionId] = useState(null);
+  const [regionEditor, setRegionEditor] = useState(null);
+  const [regionRedrawId, setRegionRedrawId] = useState(null);
   // Shared reset for the two zone transients — every site that discards
   // OTHER in-flight measurement state (sheet change, snapshot load, hydrate)
   // must discard this too, or the results panel and glow can outlive the
@@ -430,7 +439,7 @@ export default function TakeoffCanvas() {
   // Live mirror of the render-scope state the agent's capability closures read:
   // the loop runs across many awaits, so closures must read CURRENT state, not
   // the run-click render's. Updated every render (cheap object build).
-  const agentStateRef = useRef({ panels: [], scales: {}, scaleSources: {}, detectedScales: {}, conditions: [], status: "loading" });
+  const agentStateRef = useRef({ panels: [], scales: {}, scaleSources: {}, detectedScales: {}, regions: [], conditions: [], status: "loading" });
   useEffect(() => () => agentAbortRef.current?.abort(), []);   // leaving the canvas stops a live agent run
   const [ocSel, setOcSel] = useState(null);        // selected proposal vertex {ri, vi} — Delete removes just that point
   const [ocHover, setOcHover] = useState(-1);      // proposal region under the cursor — handles reveal on hover
@@ -497,6 +506,44 @@ export default function TakeoffCanvas() {
     }
     return res;
   }
+  function dispatchRegion(cmd, { record = true, reprice = false } = {}) {
+    const res = applyRegionCommand(regions, cmd);
+    if (!res.changed) return res;
+    const sourceShapes = Array.isArray(grumpTakeoffPayloadRef.current?.shapes)
+      ? grumpTakeoffPayloadRef.current.shapes
+      : shapes;
+    let nextShapes = sourceShapes;
+    if (reprice) {
+      const affected = new Set([
+        ...(cmd.type === "replace" ? [cmd.region?.sheet_id] : []),
+        ...regions.filter((region) => region.id === cmd.id).map((region) => region.sheet_id),
+      ].filter(Boolean));
+      const errors = [];
+      nextShapes = sourceShapes.map((shape) => {
+        if (!affected.has(shape.sheet_id) || shape.measure_role === "count") return shape;
+        const resolution = resolveScaleForShape(shape, res.regions, scales);
+        if (resolution.status !== "resolved") {
+          errors.push({ shape, resolution });
+          return shape;
+        }
+        return { ...shape, computed: recomputeShape(shape, resolution.effective_upp, res.regions, scales) };
+      });
+      if (errors.length) {
+        return { ...res, changed: false, inverse: null, error: `${errors[0].resolution.message} ${errors.length} existing takeoff${errors.length === 1 ? "" : "s"} would become ambiguous.` };
+      }
+    }
+    setRegions(res.regions);
+    if (reprice) setShapes(nextShapes);
+    if (grumpTakeoffPayloadRef.current) {
+      grumpTakeoffPayloadRef.current = { ...grumpTakeoffPayloadRef.current, regions: res.regions, ...(reprice ? { shapes: nextShapes } : {}) };
+    }
+    if (record && res.inverse) {
+      const st = recordCommand(undoStackRef.current, { family: "region", cmd, inverse: res.inverse, shapesBefore: sourceShapes, shapesAfter: nextShapes });
+      undoStackRef.current = st.undo;
+      redoStackRef.current = st.redo;
+    }
+    return res;
+  }
   grumpProposalActionRef.current = ({ action, shape_ids: requestedIds }, event) => {
     const wanted = new Set(Array.isArray(requestedIds) ? requestedIds : []);
     const currentShapes = Array.isArray(grumpTakeoffPayloadRef.current?.shapes)
@@ -538,6 +585,12 @@ export default function TakeoffCanvas() {
     } else if (type === "shape.edited") {
       const replacements = new Map((Array.isArray(payload?.shapes) ? payload.shapes : []).map((shape) => [shape.id, shape]));
       next = sourceShapes.map((shape) => replacements.get(shape.id) || shape);
+    } else if (type === "shape.restored") {
+      const restored = (Array.isArray(payload?.shapes) ? payload.shapes : []).filter((shape) => shape?.id);
+      const replacements = new Map(restored.map((shape) => [shape.id, shape]));
+      next = sourceShapes.map((shape) => replacements.get(shape.id) || shape);
+      const present = new Set(next.map((shape) => shape.id));
+      next = [...next, ...restored.filter((shape) => !present.has(shape.id))];
     }
     if (next === sourceShapes) return { changed: 0 };
     setShapes(next);
@@ -614,6 +667,16 @@ export default function TakeoffCanvas() {
     undoStackRef.current = undoStackRef.current.slice(0, -1);
     // approval entries share the ONE gesture history (family tag, recorded by
     // dispatchApproval below) — same stacks, different pure apply + array.
+    if (entry.family === "region") {
+      const res = applyRegionCommand(regions, entry.inverse);
+      setRegions(res.regions);
+      if (entry.shapesBefore) setShapes(entry.shapesBefore);
+      if (grumpTakeoffPayloadRef.current) grumpTakeoffPayloadRef.current = { ...grumpTakeoffPayloadRef.current, regions: res.regions, ...(entry.shapesBefore ? { shapes: entry.shapesBefore } : {}) };
+      redoStackRef.current = [...redoStackRef.current, entry];
+      setSelectedRegionId(null);
+      setRegionEditor(null);
+      return;
+    }
     if (entry.family === "approval") {
       const res = applyApprovalCommand(approvals, entry.inverse);
       setApprovals(res.approvals);
@@ -632,6 +695,16 @@ export default function TakeoffCanvas() {
     const entry = redoStackRef.current[redoStackRef.current.length - 1];
     if (!entry) return;
     redoStackRef.current = redoStackRef.current.slice(0, -1);
+    if (entry.family === "region") {
+      const res = applyRegionCommand(regions, entry.cmd);
+      setRegions(res.regions);
+      if (entry.shapesAfter) setShapes(entry.shapesAfter);
+      if (grumpTakeoffPayloadRef.current) grumpTakeoffPayloadRef.current = { ...grumpTakeoffPayloadRef.current, regions: res.regions, ...(entry.shapesAfter ? { shapes: entry.shapesAfter } : {}) };
+      undoStackRef.current = [...undoStackRef.current, entry];
+      setSelectedRegionId(null);
+      setRegionEditor(null);
+      return;
+    }
     if (entry.family === "approval") {
       const res = applyApprovalCommand(approvals, entry.cmd);
       setApprovals(res.approvals);
@@ -799,6 +872,7 @@ export default function TakeoffCanvas() {
   const thumbCacheRef = useRef(new Map()); // sheetKey → thumbnail dataURL — survives gallery close
   const legacyPinnedRef = useRef(null);    // old `pinned` page numbers awaiting their one-shot tab migration
   const tabInitRef = useRef(false);        // snap to the first restored tab exactly once
+  const restoredActiveSheetRef = useRef(null); // additive active_sheet view hint; old saves fall back to tab 1
   const statusRef = useRef("loading");     // mirror for the gallery's thumbnail worker
   const viewRef = useRef("canvas");        // mirror for the keyboard handlers
   // live mirrors of tool/proposal — oneClickAt is an async function whose
@@ -991,16 +1065,23 @@ export default function TakeoffCanvas() {
   const contextSourceKey = isStitchKey(contextKey)
     ? (stitchById[contextKey]?.members?.[0]?.key || sheetKey)
     : contextKey;
+  const contextFile = parseSheetKey(contextSourceKey).file;
+  const contextDocument = sheets.find((sheet) => sheet.name === contextFile);
   grumpCanvasContextRef.current = {
-    document_name: parseSheetKey(contextSourceKey).file,
+    document_name: contextFile,
+    document_sha256: contextDocument?.sha256 || null,
+    document_revision: contextDocument?.document_revision || null,
     sheet_id: contextKey,
     visible_sheet_ids: groupKeys.flatMap((key) => (
       isStitchKey(key) ? (stitchById[key]?.members || []).map((member) => member.key) : [key]
     )),
+    units_per_px: scales[contextKey] ?? null,
+    scale_source: scaleSources[contextKey] || null,
+    scale_confirmed: scales[contextKey] ? scaleUnconfirmed[contextKey] !== false : null,
   };
   useEffect(() => {
     grumpBridgeRef.current?.publishContext?.(grumpCanvasContextRef.current);
-  }, [sheetKey, focusKey, sheetGroup, stitches, sheets, status, projectHydrated]);
+  }, [sheetKey, focusKey, sheetGroup, stitches, sheets, scales, scaleSources, scaleUnconfirmed, status, projectHydrated]);
   // docEpoch re-keys groupSig when a re-dropped file's BYTES changed under the
   // same name (store.addPdf → revised): the render effect keyed on groupSig is
   // the one path that resets every cache (compositor, pageObjs, snap grids) and
@@ -1078,9 +1159,37 @@ export default function TakeoffCanvas() {
   // unchanged so none of factorFor/uppFor's ~20 call sites needed to move.
   const factorFor = (key) => panelGeom.factorFor(renderScalesRef.current, key);
   const uppFor = (key) => panelGeom.uppFor(scales, renderScalesRef.current, key);
+  const normalizeScalePoints = (panel, points) => points.map(([x, y]) => [
+    (x - panel.xOffset) / panel.img.w,
+    y / panel.img.h,
+  ]);
+  function resolveScaleForNorm(sheetId, kind, vertsNorm, regionSet = regions, scaleMap = scales) {
+    return resolveRegionScale({
+      sheet_id: sheetId,
+      geometry: { kind, verts_norm: vertsNorm },
+      regions: regionSet,
+      sheet_units_per_px: scaleMap[sheetId] ?? null,
+    });
+  }
+  function resolveScaleForStage(panel, kind, points, regionSet = regions, scaleMap = scales) {
+    const normalized = normalizeScalePoints(panel, points);
+    const result = resolveScaleForNorm(panel.key, kind, normalized, regionSet, scaleMap);
+    return result.status === "resolved"
+      ? { ...result, effective_upp: result.units_per_px / factorFor(panel.key), verts_norm: normalized }
+      : { ...result, verts_norm: normalized };
+  }
+  function scaleReceipt(result) {
+    return result?.status === "resolved"
+      ? {
+          scale_source: result.source,
+          scale_units_per_px: result.units_per_px,
+          ...(result.region_id ? { scale_region_id: result.region_id } : {}),
+        }
+      : {};
+  }
   // keep the agent's capability closures reading LIVE state across their awaits
   useEffect(() => {
-    agentStateRef.current = { panels, scales, scaleSources, detectedScales, conditions, status };
+    agentStateRef.current = { panels, scales, scaleSources, detectedScales, regions, conditions, status };
   });
 
   // ── roll goods (#136): the figured layouts, one pure pass over the takeoff ──
@@ -1089,9 +1198,13 @@ export default function TakeoffCanvas() {
   // must not re-figure a roll. uppFor reads `scales` (a dep) plus a ref pinned
   // to RENDER_SCALE, so the dep list is honest.
   const rollTakeoff = useMemo(
-    () => computeRollTakeoff(conditions, shapes, (k) => panelImgs[k] || null, (k) => uppFor(k)),
+    () => computeRollTakeoff(conditions, shapes, (k) => panelImgs[k] || null, (k, shape) => {
+      if (!shape) return uppFor(k);
+      const resolution = resolveScaleForShape(shape);
+      return resolution.status === "resolved" ? resolution.effective_upp : null;
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- uppFor reads scales (listed) + renderScalesRef pinned to RENDER_SCALE; listing it would re-figure rolls on every render
-    [conditions, shapes, panelImgs, scales]   // uppFor: scales + a pinned ref
+    [conditions, shapes, panelImgs, scales, regions]   // uppFor: scales + a pinned ref
   );
   const rollByCond = rollTakeoff.byCond;
   const rollCutsByPanel = rollTakeoff.cutsBySheet;
@@ -1466,6 +1579,7 @@ export default function TakeoffCanvas() {
     // gallery-first: tabs restore directly; legacy pinned pages migrate once
     // (over in the sheets effect, where file names are known); nothing open → gallery
     const tabs = Array.isArray(a.sheet_tabs) ? a.sheet_tabs : [];
+    restoredActiveSheetRef.current = typeof a.active_sheet === "string" ? a.active_sheet : null;
     noTabsRef.current = false;   // accurate on every (re)hydrate; the no-tabs branch flips it true
     if (tabs.length) setOpenTabs(tabs);
     else if (Array.isArray(a.pinned) && a.pinned.length) legacyPinnedRef.current = a.pinned;
@@ -1492,6 +1606,12 @@ export default function TakeoffCanvas() {
     setScales(sc);
     setScaleSources(src);
     setScaleUnconfirmed(unconf);
+    // Additive region contract: old payloads and malformed collections become
+    // [] rather than inheriting the project that hydrate just replaced.
+    setRegions(sanitizeRegions(a.regions));
+    setSelectedRegionId(null);
+    setRegionEditor(null);
+    setRegionRedrawId(null);
     // display units ride the payload (additive) — a metric project opens metric
     // on any machine; payloads without the field keep this browser's toggle
     if (a.units === "metric" || a.units === "imperial") setUnits(a.units);
@@ -1645,7 +1765,14 @@ export default function TakeoffCanvas() {
   useEffect(() => {
     if (tabInitRef.current || !openTabs.length || !sheets.length || sheetGroup.length) return;
     tabInitRef.current = true;
-    goToSheet(openTabs[0]);
+    const restored = restoredActiveSheetRef.current;
+    restoredActiveSheetRef.current = null;
+    const restoredFile = restored && !isStitchKey(restored) ? parseSheetKey(restored).file : null;
+    const restoredIsLive = Boolean(
+      restored
+      && (openTabs.includes(restored) || (restoredFile && sheets.some((s) => s.name === restoredFile)))
+    );
+    goToSheet(restoredIsLive ? restored : openTabs[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openTabs, sheets]);
 
@@ -2065,7 +2192,7 @@ export default function TakeoffCanvas() {
     // units is additive and diff-only (the sheet_levels convention): imperial —
     // the default — omits the key, so an old imperial project's payload is
     // byte-identical on round-trip; only a metric project carries the field.
-    return { project_name: projectName, ...(units === "metric" ? { units } : {}), ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}), ...(scaleUnconfirmed[sheet_id] === false ? { scale_confirmed: false } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, ...(approvals.length ? { approvals } : {}), ...(rules.length ? { rules } : {}), sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(stitches.length ? { stitches } : {}), ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(layerOverrides).length ? { layer_overrides: layerOverrides } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
+    return { project_name: projectName, ...(units === "metric" ? { units } : {}), ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}), ...(scaleUnconfirmed[sheet_id] === false ? { scale_confirmed: false } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, ...(approvals.length ? { approvals } : {}), ...(regions.length ? { regions } : {}), ...(rules.length ? { rules } : {}), sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, active_sheet: sheetKey, ...(stitches.length ? { stitches } : {}), ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(layerOverrides).length ? { layer_overrides: layerOverrides } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
   };
   // React may batch several journal-replay imports before the next render.
   // Preserve each merged result immediately so the following proposal composes
@@ -2116,6 +2243,7 @@ export default function TakeoffCanvas() {
     grumpTakeoffPayloadRef.current = payload;
     restoreSavedPayload(payload);
     const parts = [`Imported ${note.shapes_added} shape${note.shapes_added === 1 ? "" : "s"}`];
+    if (note.regions_added) parts.push(`${note.regions_added} project-map region${note.regions_added === 1 ? "" : "s"}`);
     if (note.shapes_pending) parts.push(`${note.shapes_pending} dashed pending your review — Accept turns pencil to ink`);
     if (note.conditions_added) parts.push(`${note.conditions_added} new condition${note.conditions_added === 1 ? "" : "s"}`);
     if (note.conditions_merged) parts.push(`${note.conditions_merged} matched your finish tags`);
@@ -2178,17 +2306,18 @@ export default function TakeoffCanvas() {
       // pre-adopt payload) → don't push stale over the winner; go idle so the canvas
       // can drain and re-hydrate. Closes the last pre-scheduled-save loss window.
       if (remotePendingRender.current) { setSaveState("idle"); return; }
-      store.saveAnnotations(payload).then(() => setSaveState("saved")).catch((e) => {
-        if (isStaleTabError(e)) setCommitMsg(STALE_TAB_MESSAGE);
-        setSaveState("idle");
-      });
+    store.saveAnnotations(payload).then(() => setSaveState("saved")).catch((e) => {
+      if (isStaleTabError(e)) setCommitMsg(STALE_TAB_MESSAGE);
+      else setCommitMsg(`Couldn't save project takeoff: ${e?.message || e || "unknown error"}`);
+      setSaveState("idle");
+    });
     }, 700);
     return () => clearTimeout(t);
     // buildPayload is intentionally omitted: this dep list IS the exact set of
     // state it serializes, so listing buildPayload (a new identity each render)
     // would fire a save on every render instead of only on a real change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, approvals, rfis, rules, provCounters, sheetGroup, sheetLevels, layerOverrides, lastGroup, openTabs, stitches, projectName, clientInfo, units]);
+  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, scaleUnconfirmed, markups, approvals, regions, rfis, rules, provCounters, sheetGroup, sheetLevels, layerOverrides, lastGroup, openTabs, sheetKey, stitches, projectName, clientInfo, units]);
   useEffect(() => { saveStateRef.current = saveState; }, [saveState]);
 
   // Flush a pending debounced save on navigate-away (unmount), and warn before a
@@ -2424,7 +2553,7 @@ export default function TakeoffCanvas() {
         // agent-proposal accept resumes the key the moment the offer clears
         if (agentOfferFnsRef.current?.pending()) { e.preventDefault(); agentOfferFnsRef.current.confirm(); return; }
         if (tool === "oneclick" && proposal?.regions.length) { e.preventDefault(); createProposal(); return; }
-        const ok = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
+        const ok = ((tool === "area" || tool === "deduct") && poly.length >= 3) || ((tool === "zone" || tool === "map-region") && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
         if (ok) { e.preventDefault(); finishShape(); return; }
         // ⏎ with agent proposals pending on a visible sheet = accept them all —
         // the agent's analogue of one-click's Create gate. Only fires when no
@@ -2491,6 +2620,7 @@ export default function TakeoffCanvas() {
         else if (selVert != null && selectedId) { deleteSelectedShapeVertex(); }
         // route through deleteSelected — a reconciled Cut Out (#137) must
         // revert its hole out of the parent, keyboard and menu alike
+        else if (selectedRegionId) { deleteMapRegion(selectedRegionId); }
         else if (selectedId) { deleteSelected(); }
         else if (selectedMarkupId && showMarkups) { deleteMarkup(selectedMarkupId); setSelectedMarkupId(null); }
         // pop ONLY the armed tool's pending points — calibrate and check both
@@ -2500,7 +2630,7 @@ export default function TakeoffCanvas() {
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
       } else if (e.key === "Enter" && grumpCaptureStateRef.current?.capture_tool === "polygon") { e.preventDefault(); completeGrumpCapture(); }
-      else if (e.key === "Escape") { if (grumpCaptureStateRef.current) { e.preventDefault(); cancelGrumpCapture(); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); setAlignPt(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      else if (e.key === "Escape") { if (grumpCaptureStateRef.current) { e.preventDefault(); cancelGrumpCapture(); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setSelectedRegionId(null); setRegionEditor(null); setRegionRedrawId(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); setAlignPt(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -2519,7 +2649,7 @@ export default function TakeoffCanvas() {
     return () => window.removeEventListener("keydown", onKey);
     // approvals is a real dep: ⌘Z's undoShapeCommand closes over it (the
     // family branch), and a stale capture would undo against a pre-seal array.
-  }, [tool, selectedId, selVert, selectedMarkupId, showMarkups, poly, proposal, ocSel, shapes, approvals, sheetKey, groupSig, scales, focusKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tool, selectedId, selectedRegionId, selVert, selectedMarkupId, showMarkups, poly, proposal, ocSel, shapes, approvals, regions, sheetKey, groupSig, scales, focusKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The typed "drawing says" value belongs to ONE completed two-point check.
   // The moment the measurement is no longer complete — third-click restart,
@@ -2544,7 +2674,15 @@ export default function TakeoffCanvas() {
   // e.g. area → linear must not discard a legitimate in-progress trace.
   useEffect(() => {
     if (tool !== "zone") resetZone();
-    if (prevToolRef.current === "zone" && tool !== "zone") setPoly([]);
+    if (
+      ((prevToolRef.current === "zone" || prevToolRef.current === "map-region") && tool !== prevToolRef.current)
+      || (tool === "map-region" && prevToolRef.current !== "map-region")
+    ) setPoly([]);
+    if (tool !== "map-region") {
+      setSelectedRegionId(null);
+      setRegionEditor(null);
+      setRegionRedrawId(null);
+    }
     prevToolRef.current = tool;
   }, [tool]);
 
@@ -2750,7 +2888,7 @@ export default function TakeoffCanvas() {
     if (tool === "calibrate") setCalib((c) => (c.length >= 2 ? [p] : [...c, p]));
     else if (tool === "check") setCheck((c) => (c.length >= 2 ? [p] : [...c, p]));
     else if (tool === "oneclick") oneClickAt(p, !!(ev && ev.altKey));
-    else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") setPoly((q) => [...q, p]);
+    else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone" || tool === "map-region") setPoly((q) => [...q, p]);
     else if (tool === "count") commitCount(p);
     else if (tool === "rect" || tool === "deduct-rect") {
       if (poly.length === 0) setPoly([p]);
@@ -3003,9 +3141,16 @@ export default function TakeoffCanvas() {
     // command stamps "vertex" centrally, so a machine shape corrected only
     // this way can't read as a clean accept
     const vn = sel.verts_norm.filter((_, j) => j !== selVert);
+    const nextShape = { ...sel, verts_norm: vn };
+    const resolution = resolveScaleForShape(nextShape);
+    if (resolution.status !== "resolved") {
+      setCommitMsg(resolution.message);
+      setSelVert(null);
+      return;
+    }
     dispatchShape({
       type: "geom", id: sel.id, editKind: "vertexDelete",
-      verts_norm: vn, computed: recomputeShape({ ...sel, verts_norm: vn }), prev: geomSnapshot(sel),
+      verts_norm: vn, computed: recomputeShape(nextShape, resolution.effective_upp), prev: geomSnapshot(sel),
     });
     setSelVert(null);
   }
@@ -3018,8 +3163,27 @@ export default function TakeoffCanvas() {
   // shared with the load-time heal, which prices shapes on CLOSED sheets too.
   // Hole-aware since #137: a parent carrying verts_norm_holes prices the
   // clipped geometry, not the outer ring.
-  function recomputeShape(s, uppOverride) {
-    return computeShapeMetrics(s, panelByKey(s.sheet_id).img, uppOverride ?? (uppFor(s.sheet_id) || 0), condById[s.condition_id]);
+  function shapeScaleGeometry(s) {
+    const verts = Array.isArray(s.verts_norm) ? s.verts_norm : [];
+    if (s.measure_role === "count") return { kind: "point", verts_norm: verts };
+    if (s.measure_role === "linear" || s.measure_role === "surface_area") {
+      if (!s.curved) return { kind: "polyline", verts_norm: verts };
+      const panel = panelByKey(s.sheet_id);
+      const flat = flattenCurve(verts.map(([nx, ny]) => [nx * panel.img.w, ny * panel.img.h]));
+      return { kind: "polyline", verts_norm: flat.map(([x, y]) => [x / panel.img.w, y / panel.img.h]) };
+    }
+    return { kind: "polygon", verts_norm: verts };
+  }
+  function resolveScaleForShape(s, regionSet = regions, scaleMap = scales) {
+    const result = resolveScaleForNorm(s.sheet_id, shapeScaleGeometry(s).kind, shapeScaleGeometry(s).verts_norm, regionSet, scaleMap);
+    return result.status === "resolved"
+      ? { ...result, effective_upp: result.units_per_px / factorFor(s.sheet_id) }
+      : result;
+  }
+  function recomputeShape(s, uppOverride, regionSet = regions, scaleMap = scales) {
+    const resolution = uppOverride == null ? resolveScaleForShape(s, regionSet, scaleMap) : null;
+    const upp = uppOverride ?? (resolution?.status === "resolved" ? resolution.effective_upp : 0);
+    return computeShapeMetrics(s, panelByKey(s.sheet_id).img, upp, condById[s.condition_id]);
   }
   function moveCrosshair(e) {
     if (editingRef.current) return;   // inline editor open — no aim crosshair (ref check, never per-mousemove state)
@@ -3042,7 +3206,7 @@ export default function TakeoffCanvas() {
     }
 
     // rubber-band preview: last point → cur (area/deduct/zone); rect preview: corner → cur
-    const drawing = (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone");
+    const drawing = (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone" || tool === "map-region");
 
     // polar tracking: endpoint snap wins (osnap beats polar); otherwise pull the
     // rubber band onto the 45° family. ⇧ forces the lock at any angle. The click
@@ -3100,7 +3264,9 @@ export default function TakeoffCanvas() {
       if (tool === "check" && check.length === 1) {
         // live length to the cursor while picking the second end of the dimension.
         // No CARPET_ROLL_FT amber here — a dimension string is not a seam plan.
-        const u = uppFor(panelAt(check[0][0]).key);
+        const cp = panelAt(check[0][0]);
+        const sr = panelAt(cur[0]).key === cp.key ? resolveScaleForStage(cp, "polyline", [check[0], cur]) : null;
+        const u = sr?.status === "resolved" ? sr.effective_upp : null;
         if (u) txt = fmtCheckLen(Math.hypot(cur[0] - check[0][0], cur[1] - check[0][1]) * u, units) + (lock ? ` · ${lock.deg}°` : "");
       } else if ((tool === "rect" || tool === "deduct-rect") && poly.length === 1 && liveUpp) {
         // rectangle: live W × H + area (SF and SY imperial — carpet is bought in SY)
@@ -3360,12 +3526,13 @@ export default function TakeoffCanvas() {
           vn = d.orig.map(([nx, ny]) => [nx + dx, ny + dy]);
         }
         d.lastVerts = vn;
-        // a translation never re-prices (same lengths/areas) — matches the old
-        // move updater, which left `computed` untouched
-        d.lastComputed = d.kind === "move" ? undefined : recomputeShape({ ...d.shape, verts_norm: vn });
+        const previewShape = { ...d.shape, verts_norm: vn };
+        d.lastScaleResolution = resolveScaleForShape(previewShape);
+        d.lastComputed = d.lastScaleResolution.status === "resolved"
+          ? recomputeShape(previewShape, d.lastScaleResolution.effective_upp)
+          : d.shape.computed;
         setShapes((ss) => ss.map((s) => (s.id !== d.shapeId ? s
-          : d.kind === "move" ? { ...s, verts_norm: vn }
-            : { ...s, verts_norm: vn, computed: d.lastComputed })));
+          : { ...s, verts_norm: vn, computed: d.lastComputed })));
       } else if (d.kind === "markupMove") {
         // raw cursor point — markups aren't snapped/angle-locked, and this matches the
         // raw d.start so the delta can't jump from a stale snap/angle ref.
@@ -3444,10 +3611,16 @@ export default function TakeoffCanvas() {
       // orphaned preview state.)
       if ((d.kind === "vertex" || d.kind === "edge" || d.kind === "move")
           && d.lastVerts && !vertsEqual(d.lastVerts, d.prev.verts_norm)) {
+        if (d.lastScaleResolution?.status !== "resolved") {
+          setShapes((ss) => ss.map((shape) => (shape.id === d.shapeId ? d.shape : shape)));
+          setCommitMsg(d.lastScaleResolution?.message || "That edit has no unambiguous scale and was not saved.");
+          try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ }
+          return;
+        }
         dispatchShape({
           type: "geom", id: d.shapeId, editKind: d.kind,
           verts_norm: d.lastVerts,
-          ...(d.lastComputed !== undefined ? { computed: d.lastComputed } : {}),
+          computed: d.lastComputed,
           prev: d.prev,
         });
       }
@@ -3534,7 +3707,7 @@ export default function TakeoffCanvas() {
     // a caller reprices them on canvas — wrong-but-visible beats silently-wrong.
     const sp = panels.find((p) => p.key === key);
     if (!sp?.img?.w) return; // sheet not on canvas — can't re-price without its bitmap dims
-    const uEff = upp / factorFor(key);
+    const nextScaleMap = { ...scales, [key]: upp };
     // count shapes keep their computed: EA has no upp dependency at all, and
     // recomputeShape's count branch would clobber a hand-edited / hydrated
     // fractional count (supported data — see totals.js accumulateRole) to 1.
@@ -3544,7 +3717,13 @@ export default function TakeoffCanvas() {
     // stale quantities.
     dispatchShape({
       type: "replace",
-      shapes: shapes.map((sh) => (sh.sheet_id === key && sh.measure_role !== "count" ? { ...sh, computed: recomputeShape(sh, uEff) } : sh)),
+      shapes: shapes.map((sh) => {
+        if (sh.sheet_id !== key || sh.measure_role === "count") return sh;
+        const resolution = resolveScaleForShape(sh, regions, nextScaleMap);
+        return resolution.status === "resolved"
+          ? { ...sh, computed: recomputeShape(sh, resolution.effective_upp, regions, nextScaleMap) }
+          : sh;
+      }),
     }, { reset: true });
   }
 
@@ -3623,7 +3802,9 @@ export default function TakeoffCanvas() {
     const result = subtractCutout(parentRingPx, parentHolesPx, deductPointsPx);
     if (!result) return null;
     const norm = (ring) => ring.map(([x, y]) => [(x - tp.xOffset) / tp.img.w, y / tp.img.h]);
-    const upp = uppFor(tp.key);
+    const parentResolution = resolveScaleForShape(parent);
+    if (parentResolution.status !== "resolved") return null;
+    const upp = parentResolution.effective_upp;
     const parentNext = {
       verts_norm: norm(result.outer),
       verts_norm_holes: result.holes.map(norm),
@@ -3664,18 +3845,19 @@ export default function TakeoffCanvas() {
     if (points.length < 3) return;
     if (spansPanels(points)) { setCommitMsg(SPAN_MSG); return; }
     const tp = panelAt(points[0][0]);
-    const upp = uppFor(tp.key);
-    if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first.`); return; }
+    const scaleResult = resolveScaleForStage(tp, "polygon", points);
+    if (scaleResult.status !== "resolved") { setCommitMsg(scaleResult.message); return; }
+    const upp = scaleResult.effective_upp;
     if (!activeCond) { setCommitMsg("Pick or add a condition first."); return; }
     const met = closedMetrics(points);
     // id + created_at are minted by the add command — the ONE creation gate
     const shape = {
       sheet_id: tp.key, condition_id: activeCond,
       measure_role: asDeduct ? "deduct" : "floor_area",
-      verts_norm: points.map(([x, y]) => [(x - tp.xOffset) / tp.img.w, y / tp.img.h]),
+      verts_norm: scaleResult.verts_norm,
       computed: { area_sf: +(met.area * upp * upp).toFixed(2), perimeter_lf: +(met.perim * upp).toFixed(2) },
       ...(activeLabel ? { label: activeLabel } : {}),
-      origin: { method: "manual" },
+      origin: { method: "manual", ...scaleReceipt(scaleResult) },
     };
     // #137 — a deduct tries the real-hole path first; anything ambiguous
     // (see resolveCutout) falls straight back to the independent-overlay
@@ -3697,8 +3879,9 @@ export default function TakeoffCanvas() {
     if (points.length < 2) return;
     if (spansPanels(points)) { setCommitMsg(SPAN_MSG); return; }
     const tp = panelAt(points[0][0]);
-    const upp = uppFor(tp.key);
-    if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first.`); return; }
+    const scaleResult = resolveScaleForStage(tp, "polyline", curved ? flattenCurve(points) : points);
+    if (scaleResult.status !== "resolved") { setCommitMsg(scaleResult.message); return; }
+    const upp = scaleResult.effective_upp;
     if (!activeCond) { setCommitMsg("Pick or add a condition first."); return; }
     // curved: verts stay the clicked CONTROL points (drag one → re-smooths);
     // length always comes from the flattened spline
@@ -3707,10 +3890,10 @@ export default function TakeoffCanvas() {
     dispatchShape({ type: "add", shapes: [{
       sheet_id: tp.key, condition_id: activeCond, measure_role: "linear",
       ...(curved ? { curved: true } : {}),
-      verts_norm: points.map(([x, y]) => [(x - tp.xOffset) / tp.img.w, y / tp.img.h]),
+      verts_norm: normalizeScalePoints(tp, points),
       computed: { perimeter_lf: +LF.toFixed(2), area_sf: tIn > 0 ? +((LF * tIn) / 12).toFixed(2) : 0 },
       ...(activeLabel ? { label: activeLabel } : {}),
-      origin: { method: "manual" },
+      origin: { method: "manual", ...scaleReceipt(scaleResult) },
     }] });
   }
   // Surface Area — trace the wall run in plan; SF = traced LF × the condition's
@@ -3719,18 +3902,19 @@ export default function TakeoffCanvas() {
     if (points.length < 2) return;
     if (spansPanels(points)) { setCommitMsg(SPAN_MSG); return; }
     const tp = panelAt(points[0][0]);
-    const upp = uppFor(tp.key);
-    if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first.`); return; }
+    const scaleResult = resolveScaleForStage(tp, "polyline", points);
+    if (scaleResult.status !== "resolved") { setCommitMsg(scaleResult.message); return; }
+    const upp = scaleResult.effective_upp;
     if (!activeCond) { setCommitMsg("Pick or add a condition first."); return; }
     const h = Number(aCond?.height_ft) || 0;
     if (!(h > 0)) { setCommitMsg(`Set a height for ${aCond?.finish_tag || "this condition"} (H in the condition editor) — Surface Area = traced LF × height.`); return; }
     const LF = openLen(points) * upp;
     dispatchShape({ type: "add", shapes: [{
       sheet_id: tp.key, condition_id: activeCond, measure_role: "surface_area", height_ft: h,
-      verts_norm: points.map(([x, y]) => [(x - tp.xOffset) / tp.img.w, y / tp.img.h]),
+      verts_norm: scaleResult.verts_norm,
       computed: { area_sf: +(LF * h).toFixed(2), perimeter_lf: +LF.toFixed(2) },
       ...(activeLabel ? { label: activeLabel } : {}),
-      origin: { method: "manual" },
+      origin: { method: "manual", ...scaleReceipt(scaleResult) },
     }] });
   }
   function commitCount(p) {
@@ -3846,8 +4030,6 @@ export default function TakeoffCanvas() {
   // scan, and pulling room corners onto the title-block's vector corners would
   // corrupt the ring. null = no scale, or the ring collapsed (too tiny/thin).
   function buildOneClickRegion(f, tp, local, negative, raster) {
-    const upp = uppFor(tp.key);
-    if (!upp) return null;
     // THE shared ring — trace-then-snap for vector, looser-eps unsnapped for
     // raster — through oneClickRing so this site cannot drift from the bench's
     // scoring of the production ring.
@@ -3856,6 +4038,10 @@ export default function TakeoffCanvas() {
       ? oneClickRing(f, { raster: true, rasterEps: RASTER_RDP_EPS })
       : oneClickRing(f, { nearest: (x, y, d) => (grid ? nearestSnap(grid, x, y, d) : null) });
     if (ring.length < 3) return null;
+    const ringNorm = ring.map(([x, y]) => [x / tp.img.w, y / tp.img.h]);
+    const scaleResult = resolveScaleForNorm(tp.key, "polygon", ringNorm);
+    if (scaleResult.status !== "resolved") return { error: scaleResult.message };
+    const upp = scaleResult.units_per_px / factorFor(tp.key);
     const area_sf = +(ringArea(ring) * upp * upp).toFixed(2);
     const perim_lf = +(closedMetrics(ring).perim * upp).toFixed(2);
     // Item D: the engine's own account of the trace — tier, seal, wedges,
@@ -3893,6 +4079,7 @@ export default function TakeoffCanvas() {
       rt: !!raster,
       cf: conf.score,
       cff: conf.factors,
+      scale_receipt: scaleReceipt(scaleResult),
     };
   }
   // The propose tail (physical clicks): stage the region for the Create (⏎)
@@ -3900,6 +4087,10 @@ export default function TakeoffCanvas() {
   // click racing the first raster render can't clobber state.
   function proposeRegion(f, tp, local, negative, raster) {
     const region = buildOneClickRegion(f, tp, local, negative, raster);
+    if (region?.error) {
+      setCommitMsg(region.error);
+      return;
+    }
     if (!region) {
       if (uppFor(tp.key)) setCommitMsg("Couldn't trace that space — trace it with Area (A).");
       return;
@@ -3977,8 +4168,9 @@ export default function TakeoffCanvas() {
   async function oneClickAt(p, negative, direct) {
     const say = (message) => { setCommitMsg(message); return { ok: false, message }; };
     const tp = panelAt(p[0]);
-    const upp = uppFor(tp.key);
-    if (!upp) return say(`Set the scale for ${labelFor(tp)} first.`);
+    const seedScale = resolveScaleForStage(tp, "point", [p]);
+    if (seedScale.status !== "resolved") return say(seedScale.message);
+    const upp = seedScale.effective_upp;
     if (!(direct ? direct.conditionId : activeCond)) return say("Pick or add a condition first.");
     // a click may EXTEND a same-sheet proposal; voice deixis commits whole and
     // must never swallow a selection the human is still reviewing — ANY pending
@@ -4059,6 +4251,7 @@ export default function TakeoffCanvas() {
   function settleRegion(f, tp, local, negative, raster, direct) {
     if (!direct) { proposeRegion(f, tp, local, negative, raster); return { ok: true, message: "" }; }
     const region = buildOneClickRegion(f, tp, local, negative, raster);
+    if (region?.error) return { ok: false, message: region.error };
     if (!region) return { ok: false, message: "Couldn't trace that space — trace it with Area (A)." };
     return commitOneClickRegions({ key: tp.key, regions: [region] }, direct);
   }
@@ -4072,11 +4265,29 @@ export default function TakeoffCanvas() {
     const tp = panelByKey(prop.key);
     const condId = direct ? direct.conditionId : activeCond;
     const label = direct && direct.label !== undefined ? direct.label : (activeLabel || undefined);
-    const made = prop.regions.map((r) => ({
+    const prepared = prop.regions.map((r) => {
+      const verts_norm = r.poly.map(([x, y]) => [x / tp.img.w, y / tp.img.h]);
+      const scaleResult = resolveScaleForNorm(tp.key, "polygon", verts_norm);
+      if (scaleResult.status !== "resolved") return { error: scaleResult.message };
+      const upp = scaleResult.units_per_px / factorFor(tp.key);
+      return {
+        region: r,
+        verts_norm,
+        scaleResult,
+        area_sf: +(ringArea(r.poly) * upp * upp).toFixed(2),
+        perimeter_lf: +(closedMetrics(r.poly).perim * upp).toFixed(2),
+      };
+    });
+    const invalid = prepared.find((entry) => entry.error);
+    if (invalid) {
+      setCommitMsg(invalid.error);
+      return { ok: false, message: invalid.error };
+    }
+    const made = prepared.map(({ region: r, verts_norm, scaleResult, area_sf, perimeter_lf }) => ({
       sheet_id: tp.key, condition_id: condId,
       measure_role: r.kind === "neg" ? "deduct" : "floor_area",
-      verts_norm: r.poly.map(([x, y]) => [x / tp.img.w, y / tp.img.h]),
-      computed: { area_sf: r.area_sf, perimeter_lf: r.perim_lf },
+      verts_norm,
+      computed: { area_sf, perimeter_lf },
       ...(label ? { label } : {}),
       // the provenance receipt: machine-proposed, human-reviewed at the Create
       // gate (voice deixis: the spoken imperative is the review). A handle-
@@ -4085,7 +4296,7 @@ export default function TakeoffCanvas() {
       // region's verts ARE the proposal, so nothing extra rides. Post-Create
       // edits are stamped by stampEdit, which freezes the same field from the
       // pre-edit ring only when Create didn't already.
-      origin: { method: "one_click_v1", seed_norm: [r.seed[0] / tp.img.w, r.seed[1] / tp.img.h], reviewed: true, confidence: r.cf ?? 1, ...(r.cff?.length ? { confidence_factors: r.cff } : {}), ...(r.hf ? { hatch_filtered: true } : {}), ...(r.sl ? { gap_sealed_px: r.sl } : {}), ...(r.gap ? { gap_bridged_px: r.gap } : {}), ...(r.mp ? { min_pass_px: r.mp, min_pass_delta: r.mpd } : {}), ...(r.wg ? { door_wedges: r.wg } : {}), ...(r.rw ? { ring_interiors: r.rw } : {}), ...(r.rt ? { raster_traced: true } : {}), ...(r.sens != null ? { fill_sensitivity: r.sens } : {}), ...(r.touched ? { edited_before_create: true, proposed_verts_norm: r.poly0.map(([x, y]) => [x / tp.img.w, y / tp.img.h]) } : {}) },
+      origin: { method: "one_click_v1", ...scaleReceipt(scaleResult), seed_norm: [r.seed[0] / tp.img.w, r.seed[1] / tp.img.h], reviewed: true, confidence: r.cf ?? 1, ...(r.cff?.length ? { confidence_factors: r.cff } : {}), ...(r.hf ? { hatch_filtered: true } : {}), ...(r.sl ? { gap_sealed_px: r.sl } : {}), ...(r.gap ? { gap_bridged_px: r.gap } : {}), ...(r.mp ? { min_pass_px: r.mp, min_pass_delta: r.mpd } : {}), ...(r.wg ? { door_wedges: r.wg } : {}), ...(r.rw ? { ring_interiors: r.rw } : {}), ...(r.rt ? { raster_traced: true } : {}), ...(r.sens != null ? { fill_sensitivity: r.sens } : {}), ...(r.touched ? { edited_before_create: true, proposed_verts_norm: r.poly0.map(([x, y]) => [x / tp.img.w, y / tp.img.h]) } : {}) },
     }));
     const res = dispatchShape({ type: "add", shapes: made });   // the creation gate — id/created_at minted by the command
     // ...and the new takeoff is SELECTED. Without this, Create left nothing
@@ -4100,7 +4311,7 @@ export default function TakeoffCanvas() {
     // proposal branch sits ahead of `selectedId` in the ⌫ chain, so the next
     // fill's ⌫ still discards that proposal first.
     if (res?.shapes?.length) selectShape(res.shapes[res.shapes.length - 1].id);
-    const sf = prop.regions.reduce((n, r) => n + (r.kind === "neg" ? -r.area_sf : r.area_sf), 0);
+    const sf = prepared.reduce((n, entry) => n + (entry.region.kind === "neg" ? -entry.area_sf : entry.area_sf), 0);
     // condById is a render closure — a condition minted THIS utterance is only
     // in the live mirror, so fall through to it for the tag
     const tag = (condById[condId] || agentStateRef.current.conditions.find((c) => c.id === condId))?.finish_tag || "";
@@ -4110,8 +4321,8 @@ export default function TakeoffCanvas() {
   }
   function createProposal() {
     if (!proposal || !proposal.regions.length) return;
-    commitOneClickRegions(proposal);
-    setProposal(null);
+    const result = commitOneClickRegions(proposal);
+    if (result?.ok) setProposal(null);
   }
 
   // ── One-Click proposal geometry editing — correct a fill BEFORE Create ──────
@@ -4121,7 +4332,9 @@ export default function TakeoffCanvas() {
   // so a corrected corner lands on the plan's true linework just like a hand
   // trace. Nothing here commits a takeoff — that's still the Create (⏎) gate.
   const ocMetrics = (poly, key) => {
-    const upp = uppFor(key) || 0;
+    const tp = panelByKey(key);
+    const resolution = resolveScaleForNorm(key, "polygon", poly.map(([x, y]) => [x / tp.img.w, y / tp.img.h]));
+    const upp = resolution.status === "resolved" ? resolution.units_per_px / factorFor(key) : 0;
     return { area_sf: +(ringArea(poly) * upp * upp).toFixed(2), perim_lf: +(closedMetrics(poly).perim * upp).toFixed(2) };
   };
   // `bypass` (true for a raster region/shape) skips nearestSnap entirely — on a
@@ -4294,18 +4507,23 @@ export default function TakeoffCanvas() {
   function pasteClipboard(offset = 0.03) {
     if (!clipRef.current.length) return;
     const tp = lastPtrRef.current ? panelAt(toImage(lastPtrRef.current[0], lastPtrRef.current[1])[0]) : focusPanel;
-    const needsScale = clipRef.current.some((c) => c.measure_role !== "count");
-    if (needsScale && !uppFor(tp.key)) { setCommitMsg(`Set the scale for ${labelFor(tp)} first — paste recomputes SF/LF there.`); return; }
     let cross = false;
-    const made = clipRef.current.map((c) => {
+    const prepared = clipRef.current.map((c) => {
       const same = c.from === tp.key;
       cross = cross || !same;
       // same sheet: nudge so the copy is visible; other sheet: same relative spot
       const vn = c.verts_norm.map(([x, y]) => (same ? [Math.min(0.999, x + offset), Math.min(0.999, y + offset)] : [x, y]));
       // != null, not truthy: an overridden height of 0 must survive the paste
       const s = { sheet_id: tp.key, condition_id: c.condition_id, measure_role: c.measure_role, verts_norm: vn, ...(c.height_ft != null ? { height_ft: c.height_ft } : {}), ...(c.height_override ? { height_override: true } : {}), ...(c.label ? { label: c.label } : {}), ...cloneOrigin(c.origin) };
-      return { ...s, computed: recomputeShape(s) };
+      if (s.measure_role === "count") return { shape: { ...s, computed: { count: 1 } } };
+      const resolution = resolveScaleForShape(s);
+      return resolution.status === "resolved"
+        ? { shape: { ...s, computed: recomputeShape(s, resolution.effective_upp) } }
+        : { error: resolution.message };
     });
+    const invalid = prepared.find((entry) => entry.error);
+    if (invalid) { setCommitMsg(invalid.error); return; }
+    const made = prepared.map((entry) => entry.shape);
     // the add command mints id/created_at; a plain add appends, so the minted
     // clones are the array's last N — select the newest one
     const res = dispatchShape({ type: "add", shapes: made });
@@ -4328,9 +4546,11 @@ export default function TakeoffCanvas() {
       setCommitMsg("Select an area or linear takeoff to flip."); return;
     }
     const vn = reflectVertsNorm(sel.verts_norm, axis);
+    const resolution = resolveScaleForShape({ ...sel, verts_norm: vn });
+    if (sel.measure_role !== "count" && resolution.status !== "resolved") { setCommitMsg(resolution.message); return; }
     dispatchShape({
       type: "geom", id: sel.id, editKind: "vertex",
-      verts_norm: vn, computed: recomputeShape({ ...sel, verts_norm: vn }), prev: geomSnapshot(sel),
+      verts_norm: vn, computed: recomputeShape({ ...sel, verts_norm: vn }, resolution.status === "resolved" ? resolution.effective_upp : undefined), prev: geomSnapshot(sel),
     });
   }
   // ── Tidy — one geometry pass on the selected takeoff (ringTidy) ────────────
@@ -4355,9 +4575,11 @@ export default function TakeoffCanvas() {
     const r = tidyRing(ringPx, { nearest: (x, y, dd) => (!rt && grid ? nearestSnap(grid, x, y, dd) : null) });
     if (!r.changed) { setCommitMsg("Nothing to tidy — this takeoff is already clean."); return; }
     const vn = r.ring.map(([x, y]) => [x / sp.img.w, y / sp.img.h]);
+    const resolution = resolveScaleForShape({ ...sel, verts_norm: vn });
+    if (resolution.status !== "resolved") { setCommitMsg(resolution.message); return; }
     dispatchShape({
       type: "geom", id: sel.id, editKind: "tidy",
-      verts_norm: vn, computed: recomputeShape({ ...sel, verts_norm: vn }), prev: geomSnapshot(sel),
+      verts_norm: vn, computed: recomputeShape({ ...sel, verts_norm: vn }, resolution.effective_upp), prev: geomSnapshot(sel),
     });
     setCommitMsg(`Tidied — ${ringPx.length} → ${r.ring.length} vertices; corners held to plan lines, near-square walls squared. ⌘Z undoes.`);
   }
@@ -4740,6 +4962,31 @@ export default function TakeoffCanvas() {
   }
 
   function finishShape() {
+    if (tool === "map-region") {
+      const tp = poly.length ? panelAt(poly[0][0]) : null;
+      if (poly.length >= 3 && tp && !isStitchKey(tp.key) && poly.every((point) => panelAt(point[0]).key === tp.key)) {
+        const existing = regionRedrawId ? regions.find((region) => region.id === regionRedrawId) : null;
+        const id = existing?.id || mintRegionId();
+        setSelectedRegionId(id);
+        setRegionEditor({
+          id,
+          sheet_id: tp.key,
+          name: existing?.name || "",
+          kind: existing?.kind || "area",
+          geometry: {
+            type: "polygon",
+            verts_norm: poly.map(([x, y]) => [(x - tp.xOffset) / tp.img.w, y / tp.img.h]),
+          },
+          scale_enabled: Boolean(existing?.scale_profile || existing?.purposes?.includes("scale")),
+          scale_upp: existing?.scale_profile?.units_per_px || "",
+          scale_label: existing?.scale_profile?.label || "",
+          existing: Boolean(existing),
+        });
+        setRegionRedrawId(null);
+      }
+      setPoly([]);
+      return;
+    }
     if (tool === "zone") {
       // ephemeral: classify, show, never save. Belongs to the panel of its first point.
       // Cross-panel span — the UI hides the Finish affordance (finishOk), but
@@ -4756,6 +5003,127 @@ export default function TakeoffCanvas() {
       return;
     }
     if (tool === "surface") commitSurface(poly); else if (tool === "linear") commitLinear(poly); else if (tool === "curve") commitLinear(poly, true); else commitPoly(poly, tool === "deduct"); setPoly([]);
+  }
+
+  function openMapRegion(region) {
+    if (!region) return;
+    setTool("map-region");
+    setPoly([]);
+    setRegionRedrawId(null);
+    setSelectedRegionId(region.id);
+    setRegionEditor({
+      id: region.id,
+      sheet_id: region.sheet_id,
+      name: region.name,
+      kind: region.kind,
+      geometry: region.geometry,
+      scale_enabled: Boolean(region.scale_profile || region.purposes?.includes("scale")),
+      scale_upp: region.scale_profile?.units_per_px || "",
+      scale_label: region.scale_profile?.label || "",
+      existing: true,
+    });
+    selectShape(null);
+  }
+
+  function saveMapRegion() {
+    if (!regionEditor) return;
+    const name = String(regionEditor.name || "").trim();
+    if (!name) {
+      setCommitMsg("Name this map zone before saving it.");
+      return;
+    }
+    const previous = regions.find((region) => region.id === regionEditor.id);
+    const scaleUpp = Number(regionEditor.scale_upp);
+    if (regionEditor.scale_enabled && !(Number.isFinite(scaleUpp) && scaleUpp > 0)) {
+      setCommitMsg("Choose a scale for this map zone before saving it.");
+      return;
+    }
+    const scaleProfile = regionEditor.scale_enabled ? {
+      units_per_px: scaleUpp,
+      label: regionEditor.scale_label || STANDARD_SCALES.find((item) => Math.abs(item.upp - scaleUpp) < 1e-9)?.label || "custom",
+      source: "human",
+      confirmed: true,
+    } : null;
+    if (
+      previous
+      && previous.name === name
+      && previous.kind === (regionEditor.kind || "area")
+      && JSON.stringify(previous.geometry) === JSON.stringify(regionEditor.geometry)
+      && JSON.stringify(previous.scale_profile || null) === JSON.stringify(scaleProfile)
+    ) {
+      setCommitMsg(`Map zone “${name}” already matches the saved project map.`);
+      return;
+    }
+    const now = new Date().toISOString();
+    const purposes = (previous?.purposes || ["semantic"]).filter((purpose) => purpose !== "scale");
+    if (scaleProfile) purposes.push("scale");
+    const next = {
+      ...(previous || {}),
+      id: regionEditor.id,
+      sheet_id: regionEditor.sheet_id,
+      name,
+      kind: regionEditor.kind || "area",
+      geometry: regionEditor.geometry,
+      purposes,
+      revision: previous ? previous.revision + 1 : 1,
+      review: {
+        ...(previous?.review || {}),
+        status: "confirmed",
+        fields: {
+          ...(previous?.review?.fields || {}),
+          name: "confirmed",
+          kind: "confirmed",
+          geometry: "confirmed",
+          ...(scaleProfile ? { scale_profile: "confirmed" } : {}),
+        },
+        reviewed_by: "human",
+        reviewed_at: now,
+      },
+      origin: previous?.origin || { actor: "human", method: "manual_region", created_at: now },
+    };
+    if (scaleProfile) next.scale_profile = scaleProfile;
+    else {
+      delete next.scale_profile;
+      if (next.review?.fields) {
+        const fields = { ...next.review.fields };
+        delete fields.scale_profile;
+        next.review = { ...next.review, fields };
+      }
+    }
+    const result = dispatchRegion({ type: "replace", region: next }, { reprice: true });
+    if (!result.changed) {
+      setCommitMsg(result.error || "This map zone could not be saved — verify that its contour encloses an area.");
+      return;
+    }
+    setRegionEditor({ ...regionEditor, name, scale_upp: scaleProfile?.units_per_px || "", scale_label: scaleProfile?.label || "", existing: true });
+    setSelectedRegionId(next.id);
+    setCommitMsg(`${previous ? "Updated" : "Saved"} map zone “${name}” on ${tabLabel(next.sheet_id)}.`);
+  }
+
+  function redrawMapRegion(id) {
+    const region = regions.find((item) => item.id === id);
+    if (!region) return;
+    setTool("map-region");
+    setSelectedRegionId(id);
+    setRegionEditor(null);
+    setRegionRedrawId(id);
+    setPoly([]);
+    setCommitMsg(`Redraw “${region.name}”, then Finish. The current contour remains until you save.`);
+  }
+
+  function deleteMapRegion(id) {
+    const region = regions.find((item) => item.id === id);
+    if (!region) return;
+    const result = dispatchRegion({ type: "delete", id }, { reprice: true });
+    if (!result.changed) {
+      if (result.error) setCommitMsg(result.error);
+      return;
+    }
+    setSelectedRegionId(null);
+    setRegionEditor(null);
+    setRegionRedrawId(null);
+    setPoly([]);
+    setCommitMsg(`Deleted map zone “${region.name}”. Undo restores it.`);
   }
   // #137 — the parent state deleting a reconciled deduct should restore. The
   // deduct's own frozen origin.parent_prev is only correct when it is the
@@ -4891,6 +5259,17 @@ export default function TakeoffCanvas() {
     return p && p.img.w ? p : null;
   };
   const agentUpp = (key) => panelGeom.uppFor(agentStateRef.current.scales, renderScalesRef.current, key);
+  const agentScaleForNorm = (key, kind, vertsNorm) => {
+    const result = resolveRegionScale({
+      sheet_id: key,
+      geometry: { kind, verts_norm: vertsNorm },
+      regions: agentStateRef.current.regions,
+      sheet_units_per_px: agentStateRef.current.scales[key] ?? null,
+    });
+    return result.status === "resolved"
+      ? { ...result, effective_upp: result.units_per_px / factorFor(key) }
+      : result;
+  };
 
   async function agentTextTokens(key, region) {
     const p = agentPanelFor(key);
@@ -4948,8 +5327,9 @@ export default function TakeoffCanvas() {
   async function agentOneClickProbe(key, xn, yn) {
     const p = agentPanelFor(key);
     if (!p) return { error: `Sheet ${key} isn't rendered yet — try again in a moment.` };
-    const upp = agentUpp(key);
-    if (upp == null) return { error: agentScaleGate(key, agentStateRef.current.detectedScales[key]?.label || "") };
+    const seedScale = agentScaleForNorm(key, "point", [[xn, yn]]);
+    if (seedScale.status !== "resolved") return { error: seedScale.message };
+    const upp = seedScale.effective_upp;
     const local = [xn * p.img.w, yn * p.img.h];
     const stats = sheetStatsRef.current.get(key);
     const rasterEligible = !!stats && stats.imageFrac >= RASTER_MIN_IMG_FRAC;
@@ -4984,12 +5364,16 @@ export default function TakeoffCanvas() {
       ? oneClickRing(f, { raster: true, rasterEps: RASTER_RDP_EPS })
       : oneClickRing(f, { nearest: (x, y, d) => (grid ? nearestSnap(grid, x, y, d) : null) });
     if (ring.length < 3) return { error: "Couldn't trace that space into a polygon." };
-    const area_sf = +(ringArea(ring) * upp * upp).toFixed(2);
-    const conf = traceConfidence(floodSignals(f, { raster, mppf: f.ws / upp, areaSF: area_sf }));
+    const vertsNorm = ring.map(([x, y]) => [+(x / p.img.w).toFixed(5), +(y / p.img.h).toFixed(5)]);
+    const ringScale = agentScaleForNorm(key, "polygon", vertsNorm);
+    if (ringScale.status !== "resolved") return { error: ringScale.message };
+    const measuredUpp = ringScale.effective_upp;
+    const area_sf = +(ringArea(ring) * measuredUpp * measuredUpp).toFixed(2);
+    const conf = traceConfidence(floodSignals(f, { raster, mppf: f.ws / measuredUpp, areaSF: area_sf }));
     return {
-      verts_norm: ring.map(([x, y]) => [+(x / p.img.w).toFixed(5), +(y / p.img.h).toFixed(5)]),
+      verts_norm: vertsNorm,
       area_sf,
-      perimeter_lf: +(closedMetrics(ring).perim * upp).toFixed(2),
+      perimeter_lf: +(closedMetrics(ring).perim * measuredUpp).toFixed(2),
       seed_norm: [+xn.toFixed(5), +yn.toFixed(5)],
       confidence: conf.score,
       ...(conf.factors.length ? { confidence_factors: conf.factors } : {}),
@@ -4999,6 +5383,7 @@ export default function TakeoffCanvas() {
       ...(f.wedges ? { door_wedges: f.wedges } : {}),
       ...(f.ringWedges ? { ring_interiors: f.ringWedges } : {}),
       ...(raster ? { raster_traced: true } : {}),
+      ...scaleReceipt(ringScale),
     };
   }
 
@@ -5008,7 +5393,10 @@ export default function TakeoffCanvas() {
   function stageAgentProposals(shapes) {
     const staged = shapes.map((s) => {
       const p = agentPanelFor(s.sheet);
-      const upp = agentUpp(s.sheet) || 0;
+      if (!p) throw new Error(`Sheet ${s.sheet} isn't rendered yet.`);
+      const resolution = agentScaleForNorm(s.sheet, s.measure_role === "linear" || s.measure_role === "surface_area" ? "polyline" : "polygon", s.verts_norm);
+      if (resolution.status !== "resolved") throw new Error(resolution.message);
+      const upp = resolution.effective_upp;
       const ringPx = s.verts_norm.map(([x, y]) => [x * p.img.w, y * p.img.h]);
       return {
         id: `agp-${mintUuid()}`,
@@ -5310,10 +5698,13 @@ export default function TakeoffCanvas() {
     if (!take.length) return;
     const made = [], accepted = new Set();
     let skippedClosed = 0;
+    const scaleErrors = [];
     for (const pr of take) {
       const tp = panels.find((x) => x.key === pr.sheet_id && x.img.w);
-      const upp = uppFor(pr.sheet_id);
-      if (!tp || !upp || !condById[pr.condition_id]) { skippedClosed++; continue; }
+      if (!tp || !condById[pr.condition_id]) { skippedClosed++; continue; }
+      const resolution = resolveScaleForNorm(pr.sheet_id, pr.measure_role === "linear" || pr.measure_role === "surface_area" ? "polyline" : "polygon", pr.verts_norm);
+      if (resolution.status !== "resolved") { scaleErrors.push(resolution.message); continue; }
+      const upp = resolution.units_per_px / factorFor(pr.sheet_id);
       const ringPx = pr.verts_norm.map(([x, y]) => [x * tp.img.w, y * tp.img.h]);
       made.push({
         sheet_id: pr.sheet_id, condition_id: pr.condition_id, measure_role: pr.measure_role,
@@ -5321,6 +5712,7 @@ export default function TakeoffCanvas() {
         computed: { area_sf: +(ringArea(ringPx) * upp * upp).toFixed(2), perimeter_lf: +(closedMetrics(ringPx).perim * upp).toFixed(2) },
         origin: {
           method: "agent_v1", actor: "agent", reviewed: true,
+          ...scaleReceipt(resolution),
           proposed_ts: pr.proposed_ts, accepted_ts: nowIso(),
           proposed_verts_norm: pr.verts_norm.map((v) => [...v]),
           ...(pr.seed_norm ? { seed_norm: pr.seed_norm } : {}),
@@ -5331,8 +5723,9 @@ export default function TakeoffCanvas() {
     }
     if (made.length) dispatchShape({ type: "add", shapes: made });   // ONE command — one undo entry for the batch
     setAgentProposals((ps) => ps.filter((p) => !accepted.has(p.id)));
-    if (made.length) setCommitMsg(`Accepted ${made.length} agent proposal${made.length === 1 ? "" : "s"}.${skippedClosed ? ` ${skippedClosed} skipped — open their sheet (with its scale set) to accept.` : ""}`);
-    else if (skippedClosed) setCommitMsg("Open that proposal's sheet (with its scale set) to accept it.");
+    if (made.length) setCommitMsg(`Accepted ${made.length} agent proposal${made.length === 1 ? "" : "s"}.${skippedClosed ? ` ${skippedClosed} skipped — open their sheet to accept.` : ""}${scaleErrors.length ? ` ${scaleErrors.length} withheld: ${scaleErrors[0]}` : ""}`);
+    else if (scaleErrors.length) setCommitMsg(scaleErrors[0]);
+    else if (skippedClosed) setCommitMsg("Open that proposal's sheet to accept it.");
   }
   const acceptAgentProposal = (id) => acceptAgentProposals([id]);
   const acceptAllVisibleAgentProposals = () => acceptAgentProposals(agentProposals.filter((p) => panelKeySet.has(p.sheet_id)).map((p) => p.id));
@@ -5361,6 +5754,10 @@ export default function TakeoffCanvas() {
     const sheetData = new Map();
     for (const p of panels) {
       if (!p.img?.w) continue;
+      // The v1 rule engine has one feet-true mask per sheet. A sheet carrying
+      // scale zones is withheld rather than scanning it with the fallback
+      // scale and manufacturing confidently wrong deducts.
+      if (regions.some((region) => region.sheet_id === p.key && (region.purposes?.includes("scale") || region.scale_profile))) continue;
       const mo = ensureMask(p.key);
       const upp = uppFor(p.key);
       if (!mo || !upp) continue;
@@ -5376,9 +5773,19 @@ export default function TakeoffCanvas() {
     const { rule, candidates, proposed_ts } = ruleStage;
     const ts = nowIso();
     const made = [];
+    const resolved = new Map();
+    for (const c of candidates) {
+      const scale = resolveScaleForNorm(c.sheet_id, "polygon", c.verts_norm);
+      if (scale.status !== "resolved") {
+        setCommitMsg(`Rule withheld: ${scale.message}`);
+        return;
+      }
+      resolved.set(c, scale);
+    }
     for (const c of candidates) {
       const tp = panels.find((x) => x.key === c.sheet_id && x.img.w);
-      const upp = uppFor(c.sheet_id);
+      const scale = resolved.get(c);
+      const upp = scale?.units_per_px / factorFor(c.sheet_id);
       if (!tp || !upp) continue;
       const ringPx = c.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
       made.push({
@@ -5391,6 +5798,7 @@ export default function TakeoffCanvas() {
           method: "rule_v1", actor: "rule", reviewed: true,
           rule_id: rule.id, seed_shape_id: rule.seed_shape_id,
           container_shape_id: c.container_shape_id,
+          ...scaleReceipt(scale),
           proposed_ts, accepted_ts: ts,
           proposed_verts_norm: c.verts_norm.map((v) => [...v]),
         },
@@ -5443,12 +5851,20 @@ export default function TakeoffCanvas() {
     // frames for the open panels those rooms actually sit on; an unscaled one
     // refuses the WHOLE call rather than deriving a partial answer — a
     // transition is a real length, and half a sweep reads like a whole one.
-    const frames = new Map(), unscaled = [];
+    const frames = new Map(), unscaled = [], scaleBySheet = new Map();
     const inPlay = new Set([...a.shapes, ...b.shapes].map((s) => s.sheet_id));
     for (const p of panels) {
       if (!p.img?.w || !inPlay.has(p.key)) continue;
-      const upp = uppFor(p.key);
+      const sourceShapes = [...a.shapes, ...b.shapes].filter((shape) => shape.sheet_id === p.key);
+      const resolved = sourceShapes.map((shape) => ({ shape, scale: resolveScaleForShape(shape) }));
+      const invalid = resolved.find(({ scale }) => scale.status !== "resolved");
+      if (invalid) return { error: invalid.scale.message };
+      const signatures = new Set(resolved.map(({ scale }) => `${scale.source}:${scale.region_id || "sheet"}:${scale.units_per_px}`));
+      if (signatures.size !== 1) return { error: `${labelFor(p)} has source rooms in different scale contexts. Derive transitions only between rooms that share one confirmed scale zone.` };
+      const scale = resolved[0]?.scale;
+      const upp = scale?.effective_upp;
       if (!upp) { unscaled.push(labelFor(p)); continue; }
+      scaleBySheet.set(p.key, scale);
       frames.set(p.key, { widthPx: p.img.w, heightPx: p.img.h, upp });
     }
     const refusal = transitionRefusal({ activeTag: target.finish_tag, a, b, sheets: frames, unscaled });
@@ -5464,6 +5880,7 @@ export default function TakeoffCanvas() {
       // is a question, and questions do not become shapes.
       origin: {
         method: "derived", actor: "canvas", reviewed: false, proposed_ts: nowIso(),
+        ...scaleReceipt(scaleBySheet.get(r.sheet_id)),
         derived: { between_shape_ids: r.between_shape_ids, between: r.between, case: "butt", gap_in: r.gap_in },
       },
     }));
@@ -5879,7 +6296,9 @@ export default function TakeoffCanvas() {
       if (s.condition_id !== activeCond) return s;
       if (!(field === "thickness_in" && s.measure_role === "linear")) return s;
       const sp = panelByKey(s.sheet_id);
-      const u = uppFor(s.sheet_id) || 0;
+      const resolution = resolveScaleForShape(s);
+      if (resolution.status !== "resolved") return s;
+      const u = resolution.effective_upp;
       const lpts = s.verts_norm.map(([nx, ny]) => [nx * sp.img.w, ny * sp.img.h]);
       const LF = openLen(s.curved ? flattenCurve(lpts) : lpts) * u;
       return { ...s, computed: { perimeter_lf: +LF.toFixed(2), area_sf: v > 0 ? +((LF * v) / 12).toFixed(2) : 0 } };
@@ -5921,7 +6340,15 @@ export default function TakeoffCanvas() {
   };
   const mm = closedMetrics(poly);
   // the live readout prices the IN-PROGRESS poly with its own panel's scale
-  const liveUpp = poly.length ? uppFor(panelAt(poly[0][0]).key) : uppFor(focusPanel.key);
+  const livePanel = poly.length ? panelAt(poly[0][0]) : focusPanel;
+  const liveKind = poly.length <= 1 ? "point"
+    : (tool === "linear" || tool === "surface" || tool === "curve" || poly.length < 3 ? "polyline" : "polygon");
+  const liveScaleResult = poly.length
+    ? resolveScaleForStage(livePanel, liveKind, poly)
+    : resolveRegionScale({ sheet_id: livePanel.key, geometry: { kind: "point", verts_norm: [[-1, -1]] }, regions: [], sheet_units_per_px: scales[livePanel.key] ?? null });
+  const liveUpp = liveScaleResult.status === "resolved"
+    ? (liveScaleResult.effective_upp || liveScaleResult.units_per_px / factorFor(livePanel.key))
+    : null;
   const liveArea = liveUpp ? mm.area * liveUpp * liveUpp : null;
   const livePerim = liveUpp ? mm.perim * liveUpp : null;
   // A zone trace with points on more than one panel (side-by-side group mode,
@@ -5932,7 +6359,7 @@ export default function TakeoffCanvas() {
   // visually enclosing rooms on the second sheet that shapesInZone (filtered
   // to a single sheet_id) can never count. Reject it outright — mirrors the
   // check tool's checkCross guard, the same hazard on a 2-point span.
-  const zoneTraceCross = tool === "zone" && poly.length >= 1 && poly.some((p) => panelAt(p[0]).key !== panelAt(poly[0][0]).key);
+  const zoneTraceCross = (tool === "zone" || tool === "map-region") && poly.length >= 1 && poly.some((p) => panelAt(p[0]).key !== panelAt(poly[0][0]).key);
   const condMult = aCond?.multiplier || 1;
   // HUD + Takeoffs panel are sheet-scoped ("this sheet"): they total the
   // VISIBLE shapes through the same conditionTotals rules the Report uses —
@@ -5964,7 +6391,7 @@ export default function TakeoffCanvas() {
   const healSeqRef = useRef(0);
   useEffect(() => {
     if (status !== "ready") return;
-    const missing = shapes.filter((s) => needsMetrics(s) && uppFor(s.sheet_id));
+    const missing = shapes.filter((s) => needsMetrics(s) && resolveScaleForShape(s).status === "resolved");
     if (!missing.length) return;
     const seq = ++healSeqRef.current;
     (async () => {
@@ -5981,13 +6408,16 @@ export default function TakeoffCanvas() {
       if (seq !== healSeqRef.current) return;   // stale — a newer load/edit owns the heal now
       const healed = new Map(missing
         .filter((s) => dimsBy.has(s.sheet_id))
-        .map((s) => [s.id, computeShapeMetrics(s, dimsBy.get(s.sheet_id), uppFor(s.sheet_id) || 0, condById[s.condition_id])]));
+        .map((s) => {
+          const resolution = resolveScaleForShape(s);
+          return [s.id, computeShapeMetrics(s, dimsBy.get(s.sheet_id), resolution.status === "resolved" ? resolution.units_per_px : 0, condById[s.condition_id])];
+        }));
       if (!healed.size) return;
       dispatchShape({ type: "replace", shapes: shapes.map((s) => (healed.has(s.id) ? { ...s, computed: healed.get(s.id) } : s)) }, { reset: true });
       setCommitMsg(`Repriced ${healed.size} takeoff${healed.size === 1 ? "" : "s"} that loaded without quantities.`);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reruns on load/shape/scale change; docFor/uppFor/condById read from the same render
-  }, [status, shapes, scales, conditions]);
+  }, [status, shapes, scales, regions, conditions]);
   // Zone check: the SAME conditionTotals rules on the shapes whose center point
   // sits inside the traced zone (lib/zone.js) — third scope of the one role math.
   const zoneShapes = useMemo(() => (zoneCheck ? shapesInZone(shapes, zoneCheck) : null), [shapes, zoneCheck]);
@@ -6013,7 +6443,8 @@ export default function TakeoffCanvas() {
   const stdValue = unitsPerPx ? (STANDARD_SCALES.find((s) => Math.abs(s.upp - unitsPerPx) < 1e-9)?.label || "") : "";
   // Check tool: measured span at the current scale vs what the drawing says
   const checkPanel = check.length ? panelAt(check[0][0]) : null;
-  const checkUpp = checkPanel ? uppFor(checkPanel.key) : null;
+  const checkScaleResult = checkPanel ? resolveScaleForStage(checkPanel, check.length >= 2 ? "polyline" : "point", check) : null;
+  const checkUpp = checkScaleResult?.status === "resolved" ? checkScaleResult.effective_upp : null;
   const checkCross = check.length === 2 && panelAt(check[1][0]).key !== checkPanel.key;
   const checkPx = check.length === 2 && !checkCross ? Math.hypot(check[1][0] - check[0][0], check[1][1] - check[0][1]) : 0;
   const checkFeet = checkUpp && checkPx ? checkPx * checkUpp : null;
@@ -6022,6 +6453,17 @@ export default function TakeoffCanvas() {
 
   const markupCount = markups.filter((m) => panelKeySet.has(m.sheet_id)).length;
   const selShape = selectedId ? visibleShapes.find((s) => s.id === selectedId) : null;
+  const visibleRegions = regions.filter((region) => panelKeySet.has(region.sheet_id));
+  const selectedRegion = selectedRegionId
+    ? visibleRegions.find((region) => region.id === selectedRegionId) || null
+    : null;
+  useEffect(() => {
+    if (selectedRegionId && !selectedRegion && regionEditor?.id !== selectedRegionId) {
+      setSelectedRegionId(null);
+      setRegionEditor(null);
+      setRegionRedrawId(null);
+    }
+  }, [selectedRegionId, selectedRegion, regionEditor]);
   // the input types in DISPLAY units (metres in metric); height_ft is stored feet
   const setShapeHeight = (raw) => {
     const v = Math.max(0, heightInputToFeet(parseFloat(raw) || 0, units));
@@ -6039,7 +6481,7 @@ export default function TakeoffCanvas() {
       return { ...next, computed: recomputeShape(next) };
     }));
   };
-  const finishOk = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
+  const finishOk = ((tool === "area" || tool === "deduct") && poly.length >= 3) || ((tool === "zone" || tool === "map-region") && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
 
   // ── Layers panel (#85 phase 2) wiring ──────────────────────────────────────
   // Open sheets that actually carry a PDF layer table. Empty for the common
@@ -6605,6 +7047,22 @@ export default function TakeoffCanvas() {
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${tool === "zone" ? "var(--cobalt)" : "var(--ink-faint)"}`, background: tool === "zone" ? "var(--cobalt)" : "transparent", color: tool === "zone" ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
             <Icon name="zone" size={15} />Zone
           </button>
+          <button
+            disabled={isStitchKey(focusPanel.key)}
+            onClick={() => {
+              if (tool === "map-region") { setTool("select"); return; }
+              setPoly([]);
+              setSelectedRegionId(null);
+              setRegionEditor(null);
+              setRegionRedrawId(null);
+              setTool("map-region");
+            }}
+            title={isStitchKey(focusPanel.key)
+              ? "Project Map zones belong to one source sheet, not a stitched composite."
+              : "Map zone — trace and name a persistent semantic region. Unlike Zone check, this is saved with the project."}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${tool === "map-region" ? "var(--c-positive)" : "var(--ink-faint)"}`, background: tool === "map-region" ? "var(--c-positive)" : "transparent", color: tool === "map-region" ? "var(--paper-bright)" : "var(--ink)", cursor: isStitchKey(focusPanel.key) ? "not-allowed" : "pointer", opacity: isStitchKey(focusPanel.key) ? 0.45 : 1, fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
+            <Icon name="zone" size={15} />Map{visibleRegions.length ? ` ${visibleRegions.length}` : ""}
+          </button>
           <button onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${snapOn ? "var(--c-positive)" : "var(--ink-faint)"}`, background: snapOn ? "var(--c-positive)" : "transparent", color: snapOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
             <Icon name="snap" size={15} />Snap
@@ -7134,7 +7592,7 @@ export default function TakeoffCanvas() {
        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         <div ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas} onContextMenu={(e) => e.preventDefault()}
-          onDoubleClick={(e) => { if (grumpCaptureStateRef.current?.capture_tool === "polygon") { e.preventDefault(); completeGrumpCapture({ dropDoubleClick: true }); } else if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); } else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape(); else if (tool === "select") editMarkupAt(e); }}
+          onDoubleClick={(e) => { if (grumpCaptureStateRef.current?.capture_tool === "polygon") { e.preventDefault(); completeGrumpCapture({ dropDoubleClick: true }); } else if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); } else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone" || tool === "map-region") finishShape(); else if (tool === "select") editMarkupAt(e); }}
           style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "var(--paper-cream)", cursor: grumpCapture ? "crosshair" : tool === "select" ? "default" : "none", touchAction: "none" }}>
           {/* aim crosshair (draw modes): the OS cursor is hidden on the canvas — the
               crosshair IS the cursor. Two crisp full-page hairlines riding the
@@ -7529,6 +7987,42 @@ export default function TakeoffCanvas() {
                         </g>
                       );
                     })}
+                    {/* Persistent Project Map regions are visible only while the
+                        dedicated map tool is armed. They remain selectable SVG
+                        geometry, never a painted PDF layer or takeoff shape. */}
+                    {tool === "map-region" && regions.filter((region) => region.sheet_id === p.key).map((region) => {
+                      const selected = region.id === selectedRegionId;
+                      const isScaleZone = region.purposes?.includes("scale") || Boolean(region.scale_profile);
+                      const zoneInk = isScaleZone ? "#b8860b" : "#3d8f72";
+                      const points = region.geometry.verts_norm.map(([nx, ny]) => `${nx * p.img.w},${ny * p.img.h}`).join(" ");
+                      const center = region.geometry.verts_norm.reduce(
+                        (sum, [nx, ny]) => [sum[0] + nx * p.img.w, sum[1] + ny * p.img.h],
+                        [0, 0],
+                      ).map((value) => value / region.geometry.verts_norm.length);
+                      return (
+                        <g key={region.id}>
+                <polygon
+                  data-testid="map-region-outline"
+                  data-region-id={region.id}
+                  points={points}
+                            fill={selected ? (isScaleZone ? "rgba(184,134,11,.16)" : "rgba(32,137,92,.15)") : (isScaleZone ? "rgba(184,134,11,.07)" : "rgba(32,137,92,.06)")}
+                            stroke={selected ? (isScaleZone ? "#b8860b" : "#20895c") : zoneInk}
+                            strokeWidth={(selected ? 3.5 : 2) / tf.scale}
+                            strokeDasharray={selected ? undefined : `${7 / tf.scale} ${5 / tf.scale}`}
+                            style={{ cursor: "pointer", pointerEvents: "all" }}
+                            onPointerDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              openMapRegion(region);
+                            }}
+                          />
+                          <g style={{ pointerEvents: "none" }}>
+                            <rect x={center[0] - 70 / tf.scale} y={center[1] - 10 / tf.scale} width={140 / tf.scale} height={20 / tf.scale} fill="var(--paper-bright)" fillOpacity={0.92} stroke={zoneInk} strokeWidth={1 / tf.scale} />
+                            <text x={center[0]} y={center[1]} textAnchor="middle" dominantBaseline="central" fill={isScaleZone ? "#795800" : "#174f3c"} fontSize={11 / tf.scale} fontWeight="700">{region.name}{region.scale_profile?.label ? ` · ${region.scale_profile.label}` : ""}</text>
+                          </g>
+                        </g>
+                      );
+                    })}
                     {/* zone check — transparent dashed region + a cobalt trace on every counted shape */}
                     {zoneCheck && zoneCheck.key === p.key && (
                       <g style={{ pointerEvents: "none" }}>
@@ -7713,7 +8207,7 @@ export default function TakeoffCanvas() {
               ))}
               {poly.length >= 2 && (tool === "linear" || tool === "curve" || tool === "surface"
                 ? <polyline points={(tool === "curve" ? flattenCurve(poly) : poly).map((p) => p.join(",")).join(" ")} fill="none" stroke={tool === "surface" ? activeColor : "#1f3fc7"} strokeWidth={(tool === "surface" ? 3.5 : 2.5) / tf.scale} strokeDasharray={tool === "surface" ? `${10 / tf.scale} ${3 / tf.scale} ${2 / tf.scale} ${3 / tf.scale}` : undefined} strokeLinecap="round" strokeLinejoin="round" />
-                : <polygon points={poly.map((p) => p.join(",")).join(" ")} fill={poly.length >= 3 ? (tool === "deduct" ? "rgba(176,58,38,.22)" : tool === "zone" ? "rgba(31,63,199,.06)" : shapeFill(aCond)) : "none"} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={2 / tf.scale} strokeDasharray={tool === "zone" ? `${7 / tf.scale} ${5 / tf.scale}` : undefined} />)}
+                : <polygon points={poly.map((p) => p.join(",")).join(" ")} fill={poly.length >= 3 ? (tool === "deduct" ? "rgba(176,58,38,.22)" : tool === "zone" ? "rgba(31,63,199,.06)" : tool === "map-region" ? "rgba(32,137,92,.08)" : shapeFill(aCond)) : "none"} stroke={tool === "deduct" ? "#b03a26" : tool === "map-region" ? "#20895c" : "#1f3fc7"} strokeWidth={2 / tf.scale} strokeDasharray={(tool === "zone" || tool === "map-region") ? `${7 / tf.scale} ${5 / tf.scale}` : undefined} />)}
               {/* bold the most recent segment so you see where you just clicked */}
               {poly.length >= 2 && (
                 <line x1={poly[poly.length - 2][0]} y1={poly[poly.length - 2][1]} x2={poly[poly.length - 1][0]} y2={poly[poly.length - 1][1]}
@@ -7862,6 +8356,93 @@ export default function TakeoffCanvas() {
         </div>
         )}
 
+        {(regionEditor || regionRedrawId) && tool === "map-region" && (
+          <div
+            data-testid="map-region-editor"
+            onPointerDown={(event) => event.stopPropagation()}
+            style={{ position: "absolute", left: 14, top: 14, width: 290, padding: 14, background: "var(--paper-bright)", border: "1px solid #20895c", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi + 2, color: "var(--ink)" }}>
+            {regionRedrawId && !regionEditor ? (
+              <>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>Redrawing map zone</div>
+                <div style={{ marginTop: 6, color: "var(--ink-muted)", fontSize: 11.5 }}>Trace at least three points, then Finish. The saved contour stays intact until you confirm the replacement.</div>
+                <button type="button" onClick={() => { setRegionRedrawId(null); setPoly([]); setSelectedRegionId(null); }} style={{ marginTop: 10, padding: "5px 9px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer" }}>Cancel redraw</button>
+              </>
+            ) : regionEditor ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <b style={{ fontSize: 13 }}>{regionEditor.existing ? "Edit map zone" : "Name new map zone"}</b>
+                  <span style={{ marginLeft: "auto", fontFamily: "var(--f-mono)", fontSize: 9.5, color: "var(--ink-muted)" }}>{tabLabel(regionEditor.sheet_id)}</span>
+                </div>
+                <label style={{ display: "block", marginTop: 10, fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>Name</label>
+                <input
+                  data-testid="map-region-name"
+                  autoFocus
+                  value={regionEditor.name}
+                  placeholder="Example: Section A, Patient Room 161"
+                  onChange={(event) => setRegionEditor((current) => ({ ...current, name: event.target.value }))}
+                  style={{ width: "100%", boxSizing: "border-box", marginTop: 4, padding: "7px 8px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 12.5 }}
+                />
+                <label style={{ display: "block", marginTop: 9, fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>Type</label>
+                <select data-testid="map-region-kind" value={regionEditor.kind} onChange={(event) => setRegionEditor((current) => ({ ...current, kind: event.target.value }))} style={{ width: "100%", marginTop: 4, padding: "6px 8px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 12 }}>
+                  <option value="area">Area</option>
+                  <option value="plan">Plan</option>
+                  <option value="room">Room</option>
+                  <option value="section">Section</option>
+                  <option value="elevation">Elevation</option>
+                  <option value="detail">Detail</option>
+                </select>
+                <label style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 11, fontSize: 11.5, color: "var(--ink)" }}>
+                  <input
+                    data-testid="map-region-scale-enabled"
+                    type="checkbox"
+                    checked={Boolean(regionEditor.scale_enabled)}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      const sheetUpp = scales[regionEditor.sheet_id];
+                      const detected = detectedScales[regionEditor.sheet_id];
+                      const fallbackUpp = sheetUpp || detected?.upp || "";
+                      const fallbackLabel = STANDARD_SCALES.find((item) => Math.abs(item.upp - fallbackUpp) < 1e-9)?.label || detected?.label || "";
+                      setRegionEditor((current) => ({
+                        ...current,
+                        scale_enabled: enabled,
+                        ...(enabled && !current.scale_upp ? { scale_upp: fallbackUpp, scale_label: fallbackLabel } : {}),
+                      }));
+                    }}
+                  />
+                  Use a different scale inside this zone
+                </label>
+                {regionEditor.scale_enabled && (
+                  <>
+                    <label style={{ display: "block", marginTop: 8, fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>Zone scale</label>
+                    <select
+                      data-testid="map-region-scale"
+                      value={STANDARD_SCALES.some((item) => Math.abs(item.upp - Number(regionEditor.scale_upp)) < 1e-9) ? String(regionEditor.scale_upp) : (regionEditor.scale_upp ? "__custom" : "")}
+                      onChange={(event) => {
+                        const picked = STANDARD_SCALES.find((item) => String(item.upp) === event.target.value);
+                        if (picked) setRegionEditor((current) => ({ ...current, scale_upp: picked.upp, scale_label: picked.label }));
+                      }}
+                      style={{ width: "100%", marginTop: 4, padding: "6px 8px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 12 }}>
+                      <option value="" disabled>Choose a scale</option>
+                      {regionEditor.scale_upp && !STANDARD_SCALES.some((item) => Math.abs(item.upp - Number(regionEditor.scale_upp)) < 1e-9) && (
+                        <option value="__custom">{regionEditor.scale_label || "Custom calibrated scale"}</option>
+                      )}
+                      {STANDARD_SCALES.map((item) => <option key={item.label} value={String(item.upp)}>{item.label}</option>)}
+                    </select>
+                    <div style={{ marginTop: 5, fontSize: 10.5, color: "var(--ink-muted)" }}>Human-confirmed when saved. Measurements crossing its outline will be refused.</div>
+                  </>
+                )}
+                <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
+                  <button data-testid="map-region-save" type="button" disabled={!String(regionEditor.name || "").trim() || (regionEditor.scale_enabled && !(Number(regionEditor.scale_upp) > 0))} onClick={saveMapRegion} style={{ padding: "6px 10px", border: "1px solid #20895c", background: "#20895c", color: "white", cursor: String(regionEditor.name || "").trim() && (!regionEditor.scale_enabled || Number(regionEditor.scale_upp) > 0) ? "pointer" : "not-allowed", opacity: String(regionEditor.name || "").trim() && (!regionEditor.scale_enabled || Number(regionEditor.scale_upp) > 0) ? 1 : 0.45, fontWeight: 700 }}>Save</button>
+                  {regionEditor.existing && <button data-testid="map-region-redraw" type="button" onClick={() => redrawMapRegion(regionEditor.id)} style={{ padding: "6px 9px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer" }}>Redraw</button>}
+                  {regionEditor.existing && <button data-testid="map-region-delete" type="button" onClick={() => deleteMapRegion(regionEditor.id)} style={{ padding: "6px 9px", border: "1px solid var(--c-danger)", background: "transparent", color: "var(--c-danger)", cursor: "pointer" }}>Delete</button>}
+                  <button type="button" onClick={() => { setRegionEditor(null); setSelectedRegionId(null); setRegionRedrawId(null); setPoly([]); }} style={{ padding: "6px 9px", border: "none", background: "transparent", color: "var(--ink-muted)", cursor: "pointer" }}>Cancel</button>
+                </div>
+                <div style={{ marginTop: 8, fontSize: 10.5, color: "var(--ink-muted)" }}>Saved as human-confirmed project structure · Ctrl+Z restores edits and deletions.</div>
+              </>
+            ) : null}
+          </div>
+        )}
+
         {/* live readout — top-right, at right:56 so it clears the panel rail's
             column entirely (right:14, 34px wide — same clearance the zone panel
             uses) instead of the old magic maxHeight tuned to the rail's height. */}
@@ -7871,7 +8452,7 @@ export default function TakeoffCanvas() {
           ? { left: 10, right: 10, bottom: 64, maxHeight: "36%", padding: "8px 12px" }
           : { right: 56, top: 14, minWidth: 200, maxWidth: 260, maxHeight: "calc(100% - 28px)", padding: "12px 16px" }),
           background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", borderRadius: 0, overflowY: "auto", boxShadow: "var(--shadow-pop)", fontVariantNumeric: "tabular-nums", zIndex: Z.canvasUi }}>
-          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tool === "zone" ? "Zone check" : (aCond?.finish_tag || "No condition")}</div>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tool === "zone" ? "Zone check" : tool === "map-region" ? "Project Map" : (aCond?.finish_tag || "No condition")}</div>
           {tool === "oneclick" && proposal?.regions.length ? (() => {
             const pos = proposal.regions.filter((r) => r.kind === "pos");
             const neg = proposal.regions.filter((r) => r.kind === "neg");
@@ -7887,7 +8468,22 @@ export default function TakeoffCanvas() {
                 )}
               </>
             );
-          })() : tool === "surface" && poly.length >= 2 && liveUpp ? (
+          })() : tool === "map-region" && poly.length >= 1 ? (
+            zoneTraceCross ? (
+              <span style={{ color: "var(--c-danger)", fontSize: 12.5 }}>A map zone belongs to one source sheet. Undo the point that landed on another sheet.</span>
+            ) : (
+              <>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#20895c" }}>{regionRedrawId ? "Replacement contour" : "New semantic zone"}</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 4 }}>{poly.length} point{poly.length === 1 ? "" : "s"} · Finish opens the name and type card · no scale required</div>
+              </>
+            )
+          ) : tool === "map-region" ? (
+            <>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#20895c" }}>{visibleRegions.length} map zone{visibleRegions.length === 1 ? "" : "s"} visible</div>
+              <div style={{ fontSize: 11, color: "#8a6508", marginTop: 3 }}>{visibleRegions.filter((region) => region.scale_profile?.confirmed === true).length} confirmed scale zone{visibleRegions.filter((region) => region.scale_profile?.confirmed === true).length === 1 ? "" : "s"}</div>
+              <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 4 }}>Click open canvas to trace a new zone, or click a saved outline to edit it.</div>
+            </>
+          ) : tool === "surface" && poly.length >= 2 && liveUpp ? (
             (() => {
               const liveLF = openLen(poly) * liveUpp;
               return condH > 0 ? (
@@ -7929,16 +8525,22 @@ export default function TakeoffCanvas() {
               )}
             </div>
           )}
-          <div style={{ height: 1, background: "var(--divider-soft)", margin: "8px 0" }} />
-          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, opacity: 0.5 }}>{aCond?.finish_tag || "—"} total ({condRow?.shape_count || 0}{condMult > 1 ? ` ×${condMult}` : ""})</div>
-          {condTotal !== 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(condTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)}</span> {units === "imperial" && <span style={{ fontSize: 12, fontWeight: 500, color: "var(--ink-secondary)" }}>· {num(condTotal / 9)} SY</span>}</div>}
-          {wallTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(wallTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)} wall</span></div>}
-          {borderTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(borderTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)} border</span></div>}
-          {lfTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(lenVal(lfTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{lenUnit(units)}</span></div>}
-          {countTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(countTotal, 0)} <span style={{ fontSize: 12, fontWeight: 600 }}>EA</span></div>}
-          {vertTotal > 0 && <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }} title="Display only — floor-area perimeters × this condition's height (not committed)">{fa(vertTotal)} vert (perim × H)</div>}
-          {condTotal === 0 && lfTotal === 0 && countTotal === 0 && wallTotal === 0 && borderTotal === 0 && <div style={{ fontSize: 12.5, color: "var(--ink-muted)", marginTop: 2 }}>—</div>}
-          <div style={{ fontSize: 10.5, opacity: 0.45, marginTop: 6 }}>{visibleShapes.length} shapes on {groupKeys.length > 1 ? `${groupKeys.length} sheets` : "sheet"} · zoom {(tf.scale * 100).toFixed(0)}%</div>
+          {tool === "map-region" ? (
+            <div style={{ fontSize: 10.5, opacity: 0.45, marginTop: 8 }}>{focusPanel.name || focusPanel.key} · semantic structure only · no scale required</div>
+          ) : (
+            <>
+              <div style={{ height: 1, background: "var(--divider-soft)", margin: "8px 0" }} />
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, opacity: 0.5 }}>{aCond?.finish_tag || "—"} total ({condRow?.shape_count || 0}{condMult > 1 ? ` ×${condMult}` : ""})</div>
+              {condTotal !== 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(condTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)}</span> {units === "imperial" && <span style={{ fontSize: 12, fontWeight: 500, color: "var(--ink-secondary)" }}>· {num(condTotal / 9)} SY</span>}</div>}
+              {wallTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(wallTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)} wall</span></div>}
+              {borderTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(borderTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)} border</span></div>}
+              {lfTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(lenVal(lfTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{lenUnit(units)}</span></div>}
+              {countTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(countTotal, 0)} <span style={{ fontSize: 12, fontWeight: 600 }}>EA</span></div>}
+              {vertTotal > 0 && <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }} title="Display only — floor-area perimeters × this condition's height (not committed)">{fa(vertTotal)} vert (perim × H)</div>}
+              {condTotal === 0 && lfTotal === 0 && countTotal === 0 && wallTotal === 0 && borderTotal === 0 && <div style={{ fontSize: 12.5, color: "var(--ink-muted)", marginTop: 2 }}>—</div>}
+              <div style={{ fontSize: 10.5, opacity: 0.45, marginTop: 6 }}>{visibleShapes.length} shapes on {groupKeys.length > 1 ? `${groupKeys.length} sheets` : "sheet"} · zoom {(tf.scale * 100).toFixed(0)}%</div>
+            </>
+          )}
         </div>
 
         {/* zone check results — ephemeral, clears with the tool/outline. Docked at

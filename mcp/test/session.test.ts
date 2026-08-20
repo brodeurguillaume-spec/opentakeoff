@@ -76,6 +76,55 @@ test("setScale: unknown label errors and lists the valid labels", async () => {
   });
 });
 
+test("multi-scale regions: MCP resolves the same zone scale and refuses boundary crossings", async () => {
+  const s = new Session();
+  await s.loadPlan(PLAN);
+  s.setScale(KEY, { use_detected: true }); // sheet fallback = 1/36 ft/px
+  s.regions = [{
+    id: "region:detail-a",
+    sheet_id: KEY,
+    name: "Detail A",
+    kind: "detail",
+    geometry: { type: "polygon", verts_norm: [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4], [0.1, 0.4]] },
+    purposes: ["semantic", "scale"],
+    revision: 1,
+    scale_profile: { units_per_px: 0.1, label: "calibrated detail", source: "human", confirmed: true },
+    review: { status: "confirmed", fields: { geometry: "confirmed", scale_profile: "confirmed" } },
+  }];
+
+  const inside = s.measureLine(KEY, [[300, 300], [400, 300]], { condition: "ZONE-L" });
+  assert.equal(inside.length_lf, 10);
+  assert.equal(inside.scale_source, "region");
+  assert.equal(inside.scale_region_id, "region:detail-a");
+  assert.equal(s.shapes[0].origin?.scale_region_id, "region:detail-a");
+
+  const outside = s.measureLine(KEY, [[1500, 300], [1600, 300]], {});
+  assert.equal(outside.length_lf, 2.78);
+  assert.equal(outside.scale_source, "sheet");
+
+  await assert.rejects(async () => s.measureLine(KEY, [[300, 300], [1200, 300]], { condition: "BAD" }), /crosses scale zone.*Detail A/i);
+  assert.equal(s.conditions.some((condition) => condition.finish_tag === "BAD"), false, "refusal happens before condition mutation");
+});
+
+test("multi-scale regions: unconfirmed scale zones are a hard MCP gate", async () => {
+  const s = new Session();
+  await s.loadPlan(PLAN);
+  s.regions = [{
+    id: "region:pending-scale",
+    sheet_id: KEY,
+    name: "Unverified Detail",
+    kind: "detail",
+    geometry: { type: "polygon", verts_norm: [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4], [0.1, 0.4]] },
+    purposes: ["scale"],
+    revision: 1,
+    scale_profile: { units_per_px: 0.1, label: "candidate", source: "agent", confirmed: false },
+    review: { status: "needs_review", fields: { scale_profile: "needs_review" } },
+  }];
+  await assert.rejects(async () => s.measurePolygon(KEY, [[300, 300], [400, 300], [400, 400], [300, 400]], { role: "floor_area" }), /not human-confirmed/i);
+  await assert.rejects(async () => s.detectRooms(KEY, { role: "floor_area", returnVerts: false }), /contains scale zones.*withheld/i);
+  assert.equal(s.shapes.length, 0);
+});
+
 test("oneClick: px-only preview with warning before scale, SF after, leak outside", async () => {
   const s = new Session();
   await s.loadPlan(PLAN);

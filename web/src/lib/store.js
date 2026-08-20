@@ -66,7 +66,7 @@ export function emptyAnnotations() {
   // the MCP export or contribution wire (the estimator tool is human-only).
   // stitches (#161): match-line composite surfaces — additive, sanitize-gated
   // on hydrate (lib/stitches.ts), omitted from saves while empty.
-  return { schema: ANN_SCHEMA, conditions: [], shapes: [], markups: [], sheets: [], sheet_group: [], last_group: [], sheet_tabs: [], rules: [], approvals: [], stitches: [] };
+  return { schema: ANN_SCHEMA, conditions: [], shapes: [], markups: [], sheets: [], regions: [], sheet_group: [], last_group: [], sheet_tabs: [], active_sheet: null, rules: [], approvals: [], stitches: [] };
 }
 
 function openDB() {

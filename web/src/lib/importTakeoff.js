@@ -18,6 +18,7 @@
 
 import { ANN_SCHEMA } from "./store.js";
 import { sanitizeApprovals } from "./approvals.js";
+import { sanitizeRegions } from "./regions.js";
 
 /** Parse + gate an import file's text. Throws with copy the message bar shows
  * verbatim — "Couldn't…" is the canvas's danger convention (isDangerMsg), so
@@ -57,12 +58,14 @@ const freeId = (id, taken) => {
  *   can say why nothing visible changed.
  * @returns {{payload: Record<string, any>, note: {replaced: boolean, shapes_added: number,
  *   shapes_pending: number, conditions_merged: number, conditions_added: number,
- *   scales_adopted: number, unknown_files: string[]}}}
+ *   scales_adopted: number, regions_added: number, unknown_files: string[]}}}
  */
 export function mergeTakeoffImport(current, imported, knownFiles = null) {
   const cur = current && typeof current === "object" ? current : {};
   const impShapes = arr(imported.shapes).filter((s) => s && typeof s === "object" && typeof s.sheet_id === "string" && typeof s.id === "string");
   const impConds = arr(imported.conditions).filter((c) => c && typeof c === "object" && typeof c.id === "string");
+  const curRegions = sanitizeRegions(cur.regions);
+  const impRegions = sanitizeRegions(imported.regions);
 
   const unknownFiles = (added) => {
     if (!Array.isArray(knownFiles)) return [];
@@ -70,6 +73,19 @@ export function mergeTakeoffImport(current, imported, knownFiles = null) {
     return [...new Set(added.map((s) => String(s.sheet_id).split("#")[0]).filter((f) => !known.has(f)))];
   };
   const pendingCount = (shapes) => shapes.filter((s) => s.origin?.reviewed === false).length;
+  const mergeScales = () => {
+    const sheets = [...arr(cur.sheets)];
+    const scaled = new Set(sheets.map((s) => s?.sheet_id));
+    let adopted = 0;
+    for (const s of arr(imported.sheets)) {
+      if (s && typeof s === "object" && s.sheet_id && s.units_per_px && !scaled.has(s.sheet_id)) {
+        sheets.push(s);
+        scaled.add(s.sheet_id);
+        adopted++;
+      }
+    }
+    return { sheets, adopted };
+  };
 
   // Nothing measured or marked up yet → the import IS the project. Seeded
   // default conditions and an untouched tab list are not user work, so they
@@ -77,21 +93,28 @@ export function mergeTakeoffImport(current, imported, knownFiles = null) {
   // enough here that predictability wins over preserving it). Approval seals
   // DO block it (#176): a seal is ink someone placed — operator state wins,
   // so a sealed-but-untraced project merges instead of being replaced.
-  if (!arr(cur.shapes).length && !arr(cur.markups).length && !arr(cur.approvals).length) {
+  if (!arr(cur.shapes).length && !arr(cur.markups).length && !arr(cur.approvals).length && !curRegions.length) {
     // …except the VIEW. An MCP export typically carries empty tab/group
     // state (the session has no such concept), and adopting an empty list
     // would close the operator's open sheet and bounce them to the gallery
     // mid-import — the shapes land on a sheet they're no longer looking at.
     // Empty carries no intent; a NON-empty imported view is real state and wins.
+    const scaleMerge = mergeScales();
     const payload = {
       ...imported,
+      // A human calibration is operator state even in an otherwise empty
+      // workspace. Agent geometry may add missing sheet scales, never replace
+      // or demote a scale the estimator already confirmed.
+      sheets: scaleMerge.sheets,
+      regions: impRegions,
       ...(arr(imported.sheet_tabs).length ? {} : { sheet_tabs: arr(cur.sheet_tabs) }),
+      ...(typeof imported.active_sheet === "string" ? {} : { active_sheet: cur.active_sheet || null }),
       ...(arr(imported.sheet_group).length ? {} : { sheet_group: arr(cur.sheet_group) }),
       ...(arr(imported.last_group).length ? {} : { last_group: arr(cur.last_group) }),
     };
     return {
       payload,
-      note: { replaced: true, shapes_added: impShapes.length, shapes_pending: pendingCount(impShapes), conditions_merged: 0, conditions_added: impConds.length, scales_adopted: arr(imported.sheets).length, unknown_files: unknownFiles(impShapes) },
+      note: { replaced: true, shapes_added: impShapes.length, shapes_pending: pendingCount(impShapes), conditions_merged: 0, conditions_added: impConds.length, scales_adopted: scaleMerge.adopted, regions_added: impRegions.length, unknown_files: unknownFiles(impShapes) },
     };
   }
 
@@ -152,13 +175,16 @@ export function mergeTakeoffImport(current, imported, knownFiles = null) {
   const approvalIds = new Set(arr(cur.approvals).map((a) => a?.id).filter(Boolean));
   const addedApprovals = sanitizeApprovals(imported.approvals).filter((a) => !approvalIds.has(a.id));
 
+  // ── regions: confirmed Canvas map wins by stable id ──────────────────────
+  // Region ids are durable project-map identity. An import may append a new
+  // proposed region, but never replaces the operator's confirmed geometry or
+  // field-level review under the same id.
+  const regionIds = new Set(curRegions.map((region) => region.id));
+  const addedRegions = impRegions.filter((region) => !regionIds.has(region.id));
+
   // ── scales: the operator's calibration wins per sheet ────────────────────
-  const sheets = [...arr(cur.sheets)];
-  const scaled = new Set(sheets.map((s) => s?.sheet_id));
-  let scalesAdopted = 0;
-  for (const s of arr(imported.sheets)) {
-    if (s && typeof s === "object" && s.sheet_id && s.units_per_px && !scaled.has(s.sheet_id)) { sheets.push(s); scaled.add(s.sheet_id); scalesAdopted++; }
-  }
+  const scaleMerge = mergeScales();
+  const sheets = scaleMerge.sheets;
 
   // Everything else is the operator's workspace, not import cargo: name, tabs,
   // grouping, levels, columns, labels, palette, client info, rules, counters
@@ -170,10 +196,11 @@ export function mergeTakeoffImport(current, imported, knownFiles = null) {
     markups: [...arr(cur.markups), ...addedMarkups],
     ...(addedRfis.length ? { rfis: [...arr(cur.rfis), ...addedRfis] } : {}),
     ...(addedApprovals.length ? { approvals: [...arr(cur.approvals), ...addedApprovals] } : {}),
+    ...(curRegions.length || addedRegions.length ? { regions: [...curRegions, ...addedRegions] } : {}),
     sheets,
   };
   return {
     payload,
-    note: { replaced: false, shapes_added: addedShapes.length, shapes_pending: pendingCount(addedShapes), conditions_merged: condMerged, conditions_added: condAdded, scales_adopted: scalesAdopted, unknown_files: unknownFiles(addedShapes) },
+    note: { replaced: false, shapes_added: addedShapes.length, shapes_pending: pendingCount(addedShapes), conditions_merged: condMerged, conditions_added: condAdded, scales_adopted: scaleMerge.adopted, regions_added: addedRegions.length, unknown_files: unknownFiles(addedShapes) },
   };
 }

@@ -14,12 +14,14 @@ import {
 import { UserError } from "./format.ts";
 import { sanitizeApprovals, type Session, type Shape, type Condition, type Markup } from "./session.ts";
 import type { Rule } from "../../web/src/lib/rules.ts";
+import { sanitizeRegions } from "../../web/src/lib/regions.ts";
 
 // untyped canvas JS — typed facades state the contract at the boundary
 const parseTakeoffImport = parseJs as unknown as (text: string) => Record<string, unknown>;
 interface MergeNote {
   replaced: boolean; shapes_added: number; shapes_pending: number;
   conditions_merged: number; conditions_added: number; scales_adopted: number;
+  regions_added: number;
   unknown_files: string[];
 }
 const mergeTakeoffImport = mergeJs as unknown as (
@@ -53,6 +55,10 @@ export async function importTakeoff(session: Session, filePath: string) {
   // hydrate runs (sanitizeApprovals) applies before anything lands, so one
   // corrupt record in a hand-edited file can't wedge the session.
   session.approvals = sanitizeApprovals(payload.approvals);
+  // Regions are document-map transport in this first slice: import/export is
+  // lossless and gated now, before any MCP measurement is allowed to consume
+  // a regional scale or cleanup profile in later milestones.
+  session.regions = sanitizeRegions(payload.regions);
   // scales: mergeTakeoffImport already applied "the session's calibration wins
   // per sheet" — adopt the merged rows onto sheets this document actually has
   for (const row of (payload.sheets as { sheet_id: string; units_per_px: number; scale_source?: string; scale_confirmed?: boolean }[]) ?? []) {

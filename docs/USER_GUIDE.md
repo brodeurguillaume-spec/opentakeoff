@@ -437,6 +437,29 @@ refusal.
 
 **Zone** (toolbar button; no hotkey) answers "what's in this wing?" without touching the takeoff. Trace a region the way you'd trace an area — an apartment, a phase — and close it with `⏎`, double-click, or **Finish**. A panel lists every condition whose shapes sit inside, with quantities **and its supporting materials scaled to the zone**, computed by the same rules as the Report. Shapes count by their center point, same sheet only, and counted shapes glow cobalt so inclusion is visible. It's a reading, not a takeoff: nothing is saved, redrawing replaces the zone, and `Esc` or leaving the tool clears it.
 
+### Project Map zones
+
+**Map** (Aids toolbar; no hotkey) creates persistent semantic structure rather than a
+quantity. Trace at least three points and finish with `⏎`, double-click, or **Finish**;
+then give the zone a name and choose Area, Plan, Room, Section, Elevation, or Detail.
+Scale is not required. Saved zones belong to the active source sheet and their outlines
+appear only while Map is active, so normal takeoff stays uncluttered.
+
+For an enlarged plan, section, elevation, or detail, enable **Use a different scale inside
+this zone** and choose its standard scale before saving. The zone becomes amber in Map mode
+and its scale appears beside its name. That human-confirmed scale applies only inside the
+outline. Outside it, measurements use the sheet scale. A nested child zone overrides its
+parent; unrelated overlapping zones must agree. If a line or area crosses a scale-zone
+boundary, OpenTakeoff refuses it and asks you to split the measurement—one geometric shape
+never mixes two calibrations. Changing or deleting a scale zone re-prices affected existing
+shapes; if that would make any shape ambiguous, the edit itself is refused.
+
+Click a saved outline to rename or reclassify it, choose **Redraw** to replace its
+boundary, or **Delete** to remove it. `Ctrl+Z` / `⌘Z` and redo use the same history as
+takeoff edits, including restoring a deleted zone. Project Map zones autosave and return
+with the same sheet after reload. They are distinct from **Zone check**, which is temporary
+and calculates quantities.
+
 ### The 45°/90° angle lock
 
 With the **45°** toggle on (it's on by default), the segment you're drawing locks to the 45° family — 0°, 45°, 90°, 135° across the sheet — whenever the cursor comes within ~4° of an axis. The lock is quiet: the star swells, the preview line thickens, and the chip reads the locked angle plus the live segment length. **The click commits the exactly-on-axis point**, so walls come out dead square. Hold `⇧` to force the lock at any cursor angle; toggle **45°** off for free-angle tracing.
@@ -883,11 +906,11 @@ Every shortcut in the app, verified against the code. Letter keys are suppressed
 |---|---|
 | Click (release without moving) | Place a point |
 | Press-and-drag | Pan mid-measure (no point placed) |
-| `⏎` / double-click | Finish the shape (areas/deducts/zone need ≥ 3 points; linear/surface ≥ 2). In One-Click: **Create** the selection. With agent proposals pending and nothing mid-draw: accept all visible. |
+| `⏎` / double-click | Finish the shape (areas/deducts/Zone check/Project Map need ≥ 3 points; linear/surface ≥ 2). In One-Click: **Create** the selection. With agent proposals pending and nothing mid-draw: accept all visible. |
 | `⌫` / `Delete` | Pop the last placed point — then, in order: delete the picked One-Click vertex → drop the last One-Click region → delete the picked shape vertex → delete the selected shape → delete the selected markup → pop a calibrate/check point |
 | `⌘Z` | Mid-trace: pop the last point. Otherwise: **undo** |
 | `⇧⌘Z` | Redo |
-| `Esc` | Back out one level: clear the vertex pick first, then everything in progress (trace, proposal, calibration, check, selection, markup draft, armed stamp, zone) |
+| `Esc` | Back out one level: clear the vertex pick first, then everything in progress (trace, proposal, calibration, check, selection, markup draft, armed stamp, Zone check, Project Map editor) |
 | Hold `⇧` | Force the 45° angle lock at any cursor angle |
 | `⌥`-click (One-Click) | Carve a cutout inside a selected space |
 | `⇧`-click an edge | Insert a vertex at the edge midpoint (selected shape or One-Click proposal) and drag it |

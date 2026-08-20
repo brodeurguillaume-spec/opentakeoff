@@ -83,6 +83,21 @@ test("computeRollTakeoff: unscaled sheets and non-floor shapes are skipped, neve
   assert.equal(byCond.size, 0, "nothing figured — no ring can speak feet");
 });
 
+test("computeRollTakeoff asks for scale per shape so regional rooms do not inherit the sheet fallback", () => {
+  const conds = [{ id: "cpt", finish_tag: "CPT-1", roll_setup: { ...mintRollSetup("carpet"), direction: "ns" } }];
+  const shape = room("regional", "cpt");
+  const seen: string[] = [];
+  const regionalUpp = (key: string, candidate?: { id?: string }) => {
+    seen.push(candidate?.id || `${key}:fallback`);
+    return candidate?.id === "regional" ? 0.025 : UPP;
+  };
+  const { byCond, cutsBySheet } = computeRollTakeoff(conds, [shape], dimsFor, regionalUpp);
+  const figured = byCond.get("cpt");
+  assert.equal(figured.cutCount, 1, "the 10-ft regional width fits one 12-ft lane; the 20-ft sheet-scale width would not");
+  assert.ok(seen.every((id) => id === "regional"), "both physical layout and overlay resolve the source shape's scale");
+  assert.ok(Math.abs(cutsBySheet.get("s1")[0].h - 7.5 / 0.025) < 1e-6);
+});
+
 test("collectRollOverrides flattens lanes with the parent laneCount; corrupt layouts are ignored", () => {
   const shapes = [
     { id: "a", roll_layout: { laneCount: 2, lanes: { 0: { runMin: 1, runMax: 9 }, 1: { seq: 3 } } } },

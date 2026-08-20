@@ -53,6 +53,8 @@ import { applyRuleToProject, type Rule, type RuleShape, type SheetRuleData } fro
 // mints and a seal the canvas mints share ONE implementation of minting,
 // load-gating, and exact-restore inverses.
 import { sanitizeApprovals as sanitizeApprovalsJs, applyApprovalCommand as applyApprovalCommandJs } from "../../web/src/lib/approvals.js";
+import { sanitizeRegions, type PlanRegion } from "../../web/src/lib/regions.ts";
+import { resolveRegionScale, type RegionScaleResolution, type ScaleGeometryKind } from "../../web/src/lib/regionScale.ts";
 import { conditionTotals, grandTotals, sheetTotals, reportJson } from "../../web/src/lib/totals.js";
 import { hasRollSetup, mintRollSetup, computeRollTakeoff, rollReportRows, seamLfByShape } from "../../web/src/lib/rollTakeoff.js";
 import { gridPxPerFoot, drawGrid, drawShapes, type Ctx2D, type ToCanvas } from "./view.ts";
@@ -170,6 +172,12 @@ export interface ShapeOrigin {
   layer_bounded?: true;
   raster_traced?: true;
   fill_sensitivity?: number;
+  /** Scale receipt frozen when the quantity was figured. Region-backed
+   * measurements cite the exact confirmed Project Map zone that supplied the
+   * scale; sheet-backed measurements omit scale_region_id. */
+  scale_source?: "region" | "sheet";
+  scale_units_per_px?: number;
+  scale_region_id?: string;
   /** A linear shape derived from committed floor shapes rather than traced.
    *
    * derive_base (#148): from ONE room's perimeter — the source, the gross
@@ -511,6 +519,9 @@ export class Session {
   /** Approval-family records (#176) — estimator seals arrive only by import;
    * agent verdicts mint through markVerdict and nothing else. */
   approvals: Approval[] = [];
+  /** Persistent project-map regions, including confirmed multi-scale zones.
+   * The same pure resolver is used by this server and the browser canvas. */
+  regions: PlanRegion[] = [];
   /** The last assign-from-schedule run's unresolved rooms (0.9.18) — what the
    * marked-set cover discloses as withheld. Replaced per assign run, cleared
    * with the rest of the session on a non-merge load_plan. Seeds ride
@@ -562,6 +573,7 @@ export class Session {
       this.shapes = [];
       this.markups = [];
       this.approvals = [];
+      this.regions = [];
       this.file = null;
       this.filePath = null;
       this.nextOrd = 1;
@@ -889,9 +901,9 @@ export class Session {
    * canvas BASELINE (RENDER_SCALE) always, so renderScale === baseScale and
    * basePxPerFt === pxPerFt — the one degenerate case where the pin and the
    * legacy reconstruction agree bit-for-bit. */
-  private buildVectorMask(s: SheetState, geo: VectorGeometry, layersOpt?: { include?: string[]; exclude?: string[] }): MaskObj | null {
+  private buildVectorMask(s: SheetState, geo: VectorGeometry, layersOpt?: { include?: string[]; exclude?: string[] }, unitsPerPx = s.upp): MaskObj | null {
     if (!geo.segs.length) return null;
-    const pxPerFt = s.upp ? 1 / s.upp : 0;
+    const pxPerFt = unitsPerPx ? 1 / unitsPerPx : 0;
     return buildMask(geo.segs, s.widthPx, s.heightPx, MASK_MAX_DIM, geo.meta, pxPerFt, pxPerFt,
       { pageW: s.widthPt, pageH: s.heightPt, renderScale: RENDER_SCALE, baseScale: RENDER_SCALE },
       this.rolesFor(s, geo, layersOpt));
@@ -919,6 +931,15 @@ export class Session {
     const s = this.sheet(name);
     const geo = await this.ensureGeometry(s);
     return this.buildVectorMask(s, geo, layersOpt);
+  }
+
+  /** Build a scale-pinned flood mask for one resolved viewport. The ordinary
+   * sheet mask remains cached; a different regional scale gets a fresh mask
+   * because its feet-true gap, doorway, hatch and minimum-passage thresholds
+   * are different physical sizes. */
+  private async maskForScale(s: SheetState, unitsPerPx: number | null, layersOpt?: { include?: string[]; exclude?: string[] }): Promise<MaskObj | null> {
+    if (unitsPerPx === s.upp) return this.maskWithLayers(s.key, layersOpt);
+    return this.buildVectorMask(s, await this.ensureGeometry(s), layersOpt, unitsPerPx);
   }
 
   /** The raster-fallback mask (#154): a dedicated render of the sheet at mask
@@ -988,6 +1009,35 @@ export class Session {
     return `Set the scale for ${s.key} first — use set_scale${s.detected ? ` (detected: ${s.detected.label})` : ""}.`;
   }
 
+  private scaleFor(s: SheetState, kind: ScaleGeometryKind, ptsPx: Point[]): RegionScaleResolution {
+    return resolveRegionScale({
+      sheet_id: s.key,
+      geometry: {
+        kind,
+        verts_norm: ptsPx.map(([x, y]) => [x / s.widthPx, y / s.heightPx]),
+      },
+      regions: this.regions,
+      sheet_units_per_px: s.upp,
+    });
+  }
+
+  /** Measurement gate shared by every coordinate-taking MCP tool. It refuses
+   * boundary crossings, ambiguous/unconfirmed zones and missing calibration
+   * before a condition, shape or markup can be mutated. */
+  private requireScale(s: SheetState, kind: ScaleGeometryKind, ptsPx: Point[]): Extract<RegionScaleResolution, { status: "resolved" }> {
+    const result = this.scaleFor(s, kind, ptsPx);
+    if (result.status !== "resolved") throw new UserError(result.status === "missing" ? this.scaleGate(s) : result.message);
+    return result;
+  }
+
+  private static scaleReceipt(result: Extract<RegionScaleResolution, { status: "resolved" }>): Pick<ShapeOrigin, "scale_source" | "scale_units_per_px" | "scale_region_id"> {
+    return {
+      scale_source: result.source,
+      scale_units_per_px: result.units_per_px,
+      ...(result.region_id ? { scale_region_id: result.region_id } : {}),
+    };
+  }
+
   setScale(name: string, mode: { label?: string; upp?: number; calibrate?: { p1: [number, number]; p2: [number, number]; feet: number }; use_detected?: boolean }) {
     const s = this.sheet(name);
     let upp: number;
@@ -1052,20 +1102,20 @@ export class Session {
    * that DISAGREES with the scale these quantities were figured at? Runs the
    * sheet-level detector on a region-filtered text set — same detector, no
    * second regex. Returns the warning to ride the reply, or undefined. */
-  private scaleWarningFor(s: SheetState, ptsPx: Point[]): string | undefined {
-    if (s.upp == null || !ptsPx.length) return undefined;
+  private scaleWarningFor(s: SheetState, ptsPx: Point[], unitsPerPx = s.upp): string | undefined {
+    if (unitsPerPx == null || !ptsPx.length) return undefined;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const [x, y] of ptsPx) {
       x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
     }
     const region = expandForScaleNotes({ x0, y0, x1, y1 });
-    const adoptedLabel = s.detected && Math.abs(s.detected.upp - s.upp) / s.upp <= 1e-6 ? s.detected.label : undefined;
+    const adoptedLabel = s.detected && Math.abs(s.detected.upp - unitsPerPx) / unitsPerPx <= 1e-6 ? s.detected.label : undefined;
     // (scale gate: the unconfirmed flag deliberately does NOT ride every
     // measure reply — the agent set the scale itself, so repeating it per
     // quantity is noise. It surfaces where the numbers cross a boundary:
     // set_scale's confirmed:false, takeoff_summary's scale_unconfirmed, the
     // export/report scale_confirmed, and the canvas's confirm affordance.)
-    return mixedScaleWarning(textItemsInRegion(s.page, region), s.page.viewport, s.upp, adoptedLabel);
+    return mixedScaleWarning(textItemsInRegion(s.page, region), s.page.viewport, unitsPerPx, adoptedLabel);
   }
 
   private conditionFor(tag: string): Condition {
@@ -1153,6 +1203,12 @@ export class Session {
 
   async oneClick(name: string, x: number, y: number, opts: { condition?: string; role: "floor_area" | "deduct"; returnVerts: boolean; sensitivity?: number; layers?: { include?: string[]; exclude?: string[] } }) {
     const s = this.sheet(name);
+    const seedScale = this.scaleFor(s, "point", [[x, y]]);
+    // Preserve the historical scale-free preview only when there truly is no
+    // applicable scale. A malformed, unconfirmed or ambiguous zone is known
+    // bad state and must refuse rather than quietly act like it is absent.
+    if (seedScale.status !== "resolved" && seedScale.status !== "missing") throw new UserError(seedScale.message);
+    const seedUpp = seedScale.status === "resolved" ? seedScale.units_per_px : null;
     // Trigger policy — canvas parity (#154, see rasterPolicy): vector first
     // wherever it can work, raster only where it can't; the vector path below
     // is byte-identical to the pre-#154 behavior on any pure-vector sheet.
@@ -1160,7 +1216,7 @@ export class Session {
     let f: Extract<FloodResult, { status: "ok" }> | null = null;
     let raster = false;
     if (!rasterEligible || vectorViable) {
-      const mask = await this.maskWithLayers(name, opts.layers);
+      const mask = await this.maskForScale(s, seedUpp, opts.layers);
       if (!mask && !rasterEligible) throw new UserError("This sheet has no vector linework and no scan image to flood — nothing here bounds a region. Trace the space with measure_polygon instead.");
       if (mask) {
         // the sealed engine with the sheet's own feet-true arguments — the
@@ -1188,7 +1244,7 @@ export class Session {
       // foot is passed explicitly (ws / upp), exactly as the canvas does.
       this.refuseLayersOnRaster(opts.layers);
       const rmask = await this.ensureRasterMask(s);
-      const r = floodAtSeed(rmask, x, y, SENS_BALANCED, s.upp ? rmask.ws / s.upp : 0);
+      const r = floodAtSeed(rmask, x, y, SENS_BALANCED, seedUpp ? rmask.ws / seedUpp : 0);
       if (r.status === "leak") throw new UserError("That space isn't enclosed on the scan — the fill escaped through a gap (faded line or open doorway). Seed a more enclosed spot, or trace it with measure_polygon.");
       if (r.status !== "ok") throw new UserError("Landed on dense scan ink (text or hatching). Seed an open spot inside the room.");
       f = r;
@@ -1196,7 +1252,7 @@ export class Session {
     }
     // scalar evidence for the reply and the commit stamp — mppf explicit for
     // the raster path (its MaskObj carries none; audit A2's silent-miss case)
-    const ev = Session.floodEvidence(f, raster, s.upp ? f.ws / s.upp : 0);
+    const ev = Session.floodEvidence(f, raster, seedUpp ? f.ws / seedUpp : 0);
     // Raster trace differences, canvas parity: a looser RDP eps (scan
     // contours wobble) and NO vertex snapping — a scan has no true endpoints,
     // and pulling room corners onto the title block's few vector endpoints
@@ -1207,21 +1263,25 @@ export class Session {
     if (ring.length < 3) throw new UserError("Couldn't trace that space into a polygon.");
     const areaPx2 = ringArea(ring);
     const perimPx = closedMetrics(ring).perim;
-    if (s.upp == null) {
-      // preview only — px quantities, never committed without a scale. The
-      // engine account (confidence + factors) still rides: signals are
-      // signals, though the size deduction can't fire without real units.
-      return {
-        status: "ok" as const,
-        nverts: ring.length,
-        ...Session.floodStamp(ev),
-        ...(opts.returnVerts ? { verts: ring.map(([vx, vy]) => [round1(vx), round1(vy)]) } : {}),
-        area_px2: round1(areaPx2),
-        perimeter_px: round1(perimPx),
-        warning: `No scale set for ${s.key} — quantities unavailable. Call set_scale${s.detected ? ` (detected: ${s.detected.label})` : ""}.`,
-      };
+    const ringScale = this.scaleFor(s, "polygon", ring);
+    if (ringScale.status !== "resolved") {
+      if (ringScale.status === "missing") {
+        // preview only — px quantities, never committed without a scale. The
+        // engine account (confidence + factors) still rides: signals are
+        // signals, though the size deduction can't fire without real units.
+        return {
+          status: "ok" as const,
+          nverts: ring.length,
+          ...Session.floodStamp(ev),
+          ...(opts.returnVerts ? { verts: ring.map(([vx, vy]) => [round1(vx), round1(vy)]) } : {}),
+          area_px2: round1(areaPx2),
+          perimeter_px: round1(perimPx),
+          warning: `No scale set for ${s.key} — quantities unavailable. Call set_scale${s.detected ? ` (detected: ${s.detected.label})` : ""}.`,
+        };
+      }
+      throw new UserError(ringScale.message);
     }
-    const upp = s.upp;
+    const upp = ringScale.units_per_px;
     const area_sf = round2(areaPx2 * upp * upp);
     const perimeter_lf = round2(perimPx * upp);
     // the reply wears the same stamp commit() mints onto origin — one mapping
@@ -1243,6 +1303,7 @@ export class Session {
       shape_id = this.commit(s, opts.condition, opts.role, ring, { area_sf, perimeter_lf }, {
         method: "one_click_v1",
         actor: "agent",
+        ...Session.scaleReceipt(ringScale),
         seed_norm: [x / s.widthPx, y / s.heightPx],
         reviewed: false,
         // #85 — a trace bounded by DECLARED boundary layers is categorically
@@ -1256,8 +1317,16 @@ export class Session {
       }, ev).id;
     }
     this.flushCommits("one_click");
-    const mixed = this.scaleWarningFor(s, ring);
-    return { ...common, area_sf, perimeter_lf, ...(shape_id ? { shape_id } : {}), ...(mixed ? { warning: mixed } : {}) };
+    const mixed = this.scaleWarningFor(s, ring, upp);
+    return {
+      ...common,
+      area_sf,
+      perimeter_lf,
+      scale_source: ringScale.source,
+      ...(ringScale.region_id ? { scale_region_id: ringScale.region_id } : {}),
+      ...(shape_id ? { shape_id } : {}),
+      ...(mixed ? { warning: mixed } : {}),
+    };
   }
 
   /** Batch room detection: read every room-number label off the sheet's text
@@ -1292,6 +1361,9 @@ export class Session {
    *       judge and nothing commits anyway. */
   async detectRooms(name: string, opts: { condition?: string; role: "floor_area" | "deduct"; returnVerts: boolean; minAreaSf?: number; sensitivity?: number; layers?: { include?: string[]; exclude?: string[] }; assignFromSchedule?: boolean }) {
     const s = this.sheet(name);
+    if (this.regions.some((region) => region.sheet_id === s.key && (region.purposes.includes("scale") || region.scale_profile))) {
+      throw new UserError(`detect_rooms sweeps the whole sheet and ${s.key} contains scale zones. This batch path is withheld until it can pin each seed and traced ring independently; use one_click inside each confirmed zone, or measure_polygon. No shapes were committed.`);
+    }
     // assign-from-schedule (0.9.18): each detected room commits under the
     // FLOOR finish its OWN schedule row states, and rooms the schedule cannot
     // answer for are withheld into `unresolved[]` instead of committed under a
@@ -1481,28 +1553,29 @@ export class Session {
 
   measurePolygon(name: string, verts: Point[], opts: { condition?: string; role: "floor_area" | "deduct" }) {
     const s = this.sheet(name);
-    if (s.upp == null) throw new UserError(this.scaleGate(s));
+    const scale = this.requireScale(s, "polygon", verts);
+    const upp = scale.units_per_px;
     const met = closedMetrics(verts);
-    const area_sf = round2(met.area * s.upp * s.upp);
-    const perimeter_lf = round2(met.perim * s.upp);
+    const area_sf = round2(met.area * upp * upp);
+    const perimeter_lf = round2(met.perim * upp);
     let shape_id: string | undefined;
     // agent-supplied coordinates are a hand trace by a machine hand: manual
     // method, agent actor — and never reviewed (no human affirmed anything).
-    if (opts.condition) shape_id = this.commit(s, opts.condition, opts.role, verts, { area_sf, perimeter_lf }, { method: "manual", actor: "agent", reviewed: false }).id;
+    if (opts.condition) shape_id = this.commit(s, opts.condition, opts.role, verts, { area_sf, perimeter_lf }, { method: "manual", actor: "agent", reviewed: false, ...Session.scaleReceipt(scale) }).id;
     this.flushCommits("measure_polygon");
-    const mixed = this.scaleWarningFor(s, verts);
-    return { area_sf, perimeter_lf, nverts: verts.length, ...(shape_id ? { shape_id } : {}), ...(mixed ? { warning: mixed } : {}) };
+    const mixed = this.scaleWarningFor(s, verts, upp);
+    return { area_sf, perimeter_lf, nverts: verts.length, scale_source: scale.source, ...(scale.region_id ? { scale_region_id: scale.region_id } : {}), ...(shape_id ? { shape_id } : {}), ...(mixed ? { warning: mixed } : {}) };
   }
 
   measureLine(name: string, pts: Point[], opts: { condition?: string }) {
     const s = this.sheet(name);
-    if (s.upp == null) throw new UserError(this.scaleGate(s));
-    const length_lf = round2(openLen(pts) * s.upp);
+    const scale = this.requireScale(s, "polyline", pts);
+    const length_lf = round2(openLen(pts) * scale.units_per_px);
     let shape_id: string | undefined;
     // area_sf stays 0 — the canvas only mints border SF when the condition has a thickness
-    if (opts.condition) shape_id = this.commit(s, opts.condition, "linear", pts, { area_sf: 0, perimeter_lf: length_lf }, { method: "manual", actor: "agent", reviewed: false }).id;
+    if (opts.condition) shape_id = this.commit(s, opts.condition, "linear", pts, { area_sf: 0, perimeter_lf: length_lf }, { method: "manual", actor: "agent", reviewed: false, ...Session.scaleReceipt(scale) }).id;
     this.flushCommits("measure_line");
-    return { length_lf, npts: pts.length, ...(shape_id ? { shape_id } : {}) };
+    return { length_lf, npts: pts.length, scale_source: scale.source, ...(scale.region_id ? { scale_region_id: scale.region_id } : {}), ...(shape_id ? { shape_id } : {}) };
   }
 
   /** Surface Area — the canvas's Surface tool (commitSurface): an OPEN run
@@ -1513,7 +1586,7 @@ export class Session {
    * The refusal path mints nothing: no height, no condition side effects. */
   measureSurface(name: string, pts: Point[], opts: { condition: string; height_ft?: number }) {
     const s = this.sheet(name);
-    if (s.upp == null) throw new UserError(this.scaleGate(s));
+    const scale = this.requireScale(s, "polyline", pts);
     const existing = this.conditions.find((x) => x.finish_tag === opts.condition);
     const h = opts.height_ft ?? (Number(existing?.height_ft) || 0);
     if (!(h > 0)) {
@@ -1524,11 +1597,11 @@ export class Session {
       this.record({ op: "condition", tool: "measure_surface", condition_id: c.id, before: { waste_pct: c.waste_pct, multiplier: c.multiplier, height_ft: c.height_ft } });
       c.height_ft = opts.height_ft;
     }
-    const LF = openLen(pts) * s.upp;
-    const shape = this.commit(s, opts.condition, "surface_area", pts, { area_sf: round2(LF * h), perimeter_lf: round2(LF) }, { method: "manual", actor: "agent", reviewed: false });
+    const LF = openLen(pts) * scale.units_per_px;
+    const shape = this.commit(s, opts.condition, "surface_area", pts, { area_sf: round2(LF * h), perimeter_lf: round2(LF) }, { method: "manual", actor: "agent", reviewed: false, ...Session.scaleReceipt(scale) });
     shape.height_ft = h;
     this.flushCommits("measure_surface");
-    return { condition: c.finish_tag, height_ft: h, length_lf: round2(LF), area_sf: round2(LF * h), npts: pts.length, shape_id: shape.id };
+    return { condition: c.finish_tag, height_ft: h, length_lf: round2(LF), area_sf: round2(LF * h), npts: pts.length, scale_source: scale.source, ...(scale.region_id ? { scale_region_id: scale.region_id } : {}), shape_id: shape.id };
   }
 
   /** derive_base (#148): the estimator's most mechanical derivation — wall
@@ -1617,10 +1690,14 @@ export class Session {
       : [...new Set(this.shapes
           .filter((x) => x.measure_role === "floor_area" && activeCondIds.has(x.condition_id))
           .map((x) => x.sheet_id))];
-    const skipped_sheets: { sheet_id: string; reason: "no_scale" | "no_vector_mask" }[] = [];
+    const skipped_sheets: { sheet_id: string; reason: "no_scale" | "no_vector_mask" | "multi_scale_zones" }[] = [];
     const sheetData = new Map<string, SheetRuleData>();
     for (const key of sheetKeys) {
       const s = this.sheet(key);
+      if (this.regions.some((region) => region.sheet_id === key && (region.purposes.includes("scale") || region.scale_profile))) {
+        skipped_sheets.push({ sheet_id: key, reason: "multi_scale_zones" });
+        continue;
+      }
       if (!(s.upp && s.upp > 0)) { skipped_sheets.push({ sheet_id: key, reason: "no_scale" }); continue; }
       const mask = await this.ensureMask(key);
       if (!mask) { skipped_sheets.push({ sheet_id: key, reason: "no_vector_mask" }); continue; }
@@ -1689,12 +1766,16 @@ export class Session {
       throw new UserError(`Shape ${parent.id} was affirmed by a human — reviewed work is ink, and cutting a hole in it would mutate what the estimator signed. Commit an independent deduct with measure_polygon instead.`);
     }
     const s = this.sheet(parent.sheet_id);
-    if (s.upp == null) throw new UserError(this.scaleGate(s));
     if (opts.verts.length < 3) throw new UserError(`A cut needs at least 3 vertices — got ${opts.verts.length}.`);
-    const upp = s.upp;
     const toPx = (ring: [number, number][]): Point[] => ring.map(([nx, ny]) => [nx * s.widthPx, ny * s.heightPx]);
     const toNorm = (ring: number[][]): [number, number][] => ring.map(([x, y]) => [x / s.widthPx, y / s.heightPx]);
     const outerPx = toPx(parent.verts_norm);
+    const parentScale = this.requireScale(s, "polygon", outerPx);
+    const cutScale = this.requireScale(s, "polygon", opts.verts);
+    if (parentScale.source !== cutScale.source || parentScale.region_id !== cutScale.region_id || parentScale.units_per_px !== cutScale.units_per_px) {
+      throw new UserError("The cut and its parent resolve to different scale contexts. A reconciled hole must stay entirely inside the parent's one confirmed scale zone.");
+    }
+    const upp = parentScale.units_per_px;
     if (!ringFullyInside(outerPx, opts.verts)) {
       throw new UserError("The cut is not fully inside the parent's outer ring. The canvas resolves an edge-crossing cut as a boundary clip; over the wire the rule is refusal-over-guessing — reshape the parent with edit_shape, or commit an independent deduct with measure_polygon.");
     }
@@ -1718,7 +1799,7 @@ export class Session {
       // face value for the hover label — totals skip it, the parent nets it
       computed: { area_sf: round2(met.area * upp * upp), perimeter_lf: round2(met.perim * upp) },
       cuts_shape_id: parent.id,
-      origin: { method: "cutout_v1", actor: "agent", reviewed: false, cuts_shape_id: parent.id, parent_prev: parentPrev },
+      origin: { method: "cutout_v1", actor: "agent", reviewed: false, cuts_shape_id: parent.id, parent_prev: parentPrev, ...Session.scaleReceipt(parentScale) },
     };
     const prevNet = parentPrev.computed?.area_sf ?? 0;
     parent.verts_norm = toNorm(r.outer);
@@ -1748,9 +1829,10 @@ export class Session {
     if (!rest.length) return doomed.origin!.parent_prev!;
     const parent = this.shapes.find((x) => x.id === doomed.cuts_shape_id)!;
     const s = this.sheet(parent.sheet_id);
-    if (s.upp == null) return null;
-    const upp = s.upp;
     const px = (ring: [number, number][]): Point[] => ring.map(([nx, ny]) => [nx * s.widthPx, ny * s.heightPx]);
+    const scale = this.scaleFor(s, "polygon", px(parent.verts_norm));
+    if (scale.status !== "resolved") return null;
+    const upp = scale.units_per_px;
     const base = chain[0].origin!.parent_prev!;
     const r = recomposeCutouts(px(base.verts_norm), (base.verts_norm_holes ?? []).map(px), rest.map((x) => px(x.verts_norm)));
     if (!r) return null;
@@ -1811,18 +1893,28 @@ export class Session {
     for (const [tag, list] of [[a.finish_tag, fa], [b.finish_tag, fb]] as const) {
       if (!list.length) throw new UserError(`${tag} has no floor_area shapes to derive from — commit rooms first (one_click / detect_rooms).`);
     }
-    // a run is only measurable in FEET, so every sheet in play needs its scale
-    // before anything is compared — the derive_base refusal, one step earlier
+    // A shared-run sweep uses one physical tolerance grid per sheet. Resolve
+    // every source room first and refuse if the sheet mixes scale contexts;
+    // comparing adjacency across two differently scaled viewports would make
+    // both the gap and the run length meaningless.
     const sheetsInPlay = [...new Set([...fa, ...fb].map((s) => s.sheet_id))];
+    const scaleBySheet = new Map<string, Extract<RegionScaleResolution, { status: "resolved" }>>();
     for (const key of sheetsInPlay) {
       const s = this.sheet(key);
-      if (s.upp == null) throw new UserError(`${key} has no scale — a transition is a real length, so set_scale first (${this.scaleGate(s)})`);
+      const rooms = [...fa, ...fb].filter((shape) => shape.sheet_id === key);
+      const resolved = rooms.map((shape) => this.requireScale(s, "polygon", shape.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx])));
+      const signatures = new Set(resolved.map((scale) => `${scale.source}:${scale.region_id ?? "sheet"}:${scale.units_per_px}`));
+      if (signatures.size !== 1) {
+        throw new UserError(`${key} contains source rooms in different scale contexts. derive_transitions cannot compare adjacency across viewports; run it on rooms that share one confirmed scale zone.`);
+      }
+      scaleBySheet.set(key, resolved[0]);
     }
 
     const committed: any[] = [], withheld: any[] = [];
     for (const key of sheetsInPlay) {
       const s = this.sheet(key);
-      const upp = s.upp!;                       // feet per image px, checked above
+      const scale = scaleBySheet.get(key)!;
+      const upp = scale.units_per_px;
       const pxPerFt = 1 / upp;
       const toPx = (sh: typeof fa[number]) => sh.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx] as [number, number]);
       const onSheetA = fa.filter((x) => x.sheet_id === key), onSheetB = fb.filter((x) => x.sheet_id === key);
@@ -1834,7 +1926,7 @@ export class Session {
             max_gap_px: pxPerFt * (maxGapIn / 12),
             min_len_px: pxPerFt * (minRunIn / 12),
           });
-          for (const r of runs) this.recordRun(s, r, upp, opts.condition, ra.id, rb.id, a.finish_tag, b.finish_tag, committed, withheld);
+          for (const r of runs) this.recordRun(s, r, upp, opts.condition, ra.id, rb.id, a.finish_tag, b.finish_tag, committed, withheld, scale);
         }
       }
     }
@@ -1856,7 +1948,7 @@ export class Session {
   /** One shared run → committed transition, or a disclosed question. */
   private recordRun(s: SheetState, r: SharedRun, upp: number, condition: string,
                     aId: string, bId: string, aTag: string, bTag: string,
-                    committed: any[], withheld: any[]) {
+                    committed: any[], withheld: any[], scale: Extract<RegionScaleResolution, { status: "resolved" }>) {
     const length_lf = round2(r.length_px * upp);
     const gap_in = round1(r.gap_px * upp * 12);
     const row = { sheet: s.key, between_shape_ids: [aId, bId], length_lf, gap_in, at: [Math.round(r.at[0]), Math.round(r.at[1])] };
@@ -1868,6 +1960,7 @@ export class Session {
       method: "agent_v1",
       actor: "agent",
       reviewed: false,
+      ...Session.scaleReceipt(scale),
       derived: { between_shape_ids: [aId, bId], between: [aTag, bTag], case: "butt", gap_in },
     });
     committed.push({ ...row, shape_id: shape.id });
@@ -2490,6 +2583,8 @@ export class Session {
         ...(x.label ? { label: x.label } : {}),
         nverts: x.verts_norm.length,
         reviewed: x.origin?.reviewed === true,
+        ...(x.origin?.scale_source ? { scale_source: x.origin.scale_source } : {}),
+        ...(x.origin?.scale_region_id ? { scale_region_id: x.origin.scale_region_id } : {}),
         ...(x.origin?.assignment ? { assignment: x.origin.assignment.source } : {}),
         ...(x.origin?.agent_edits ? { agent_edits: x.origin.agent_edits } : {}),
       })),
@@ -2604,10 +2699,6 @@ export class Session {
     }
     const s = this.sheet(cur.sheet_id);
     const role = patch.role ?? cur.measure_role;
-    // count is scale-free (EA), exactly as commit-time: moving a marker on an
-    // unscaled sheet must not trip the scale gate
-    if (role !== "count" && s.upp == null) throw new UserError(this.scaleGate(s));
-    const upp = s.upp ?? 0;
 
     // Geometry: either the supplied verts or the shape's own, back in image px.
     const vertsPx: Point[] = patch.verts
@@ -2616,6 +2707,15 @@ export class Session {
     if (vertsPx.length < minPts) {
       throw new UserError(`A ${role === "count" ? "count marker needs at least 1 point" : role === "linear" || role === "surface_area" ? `${role} shape needs at least 2 points` : "closed shape needs at least 3 vertices"} — got ${vertsPx.length}.`);
     }
+    // Count is scale-free (EA). Every dimensional role resolves against the
+    // resulting geometry so moving a shape between viewports reprices it and
+    // a boundary-crossing edit refuses before mutation.
+    const scale = role === "count" ? null : this.requireScale(
+      s,
+      role === "linear" || role === "surface_area" ? "polyline" : "polygon",
+      vertsPx,
+    );
+    const upp = scale?.units_per_px ?? 0;
 
     // Quantities are always recomputed from the resulting geometry AND role, so
     // a role flip alone re-measures correctly (open length vs closed area).
@@ -2656,6 +2756,7 @@ export class Session {
       ...(role === "surface_area" ? { height_ft: Number(cur.height_ft) || heightFor() } : {}),
       ...(cur.origin ? { origin: {
         ...cur.origin,
+        ...(scale ? Session.scaleReceipt(scale) : {}),
         agent_edits: (cur.origin.agent_edits ?? 0) + 1,
         // a reassign onto a different tag is the agent choosing the finish —
         // keeping "schedule" (and its citation) past that point would be a lie
@@ -2818,7 +2919,13 @@ export class Session {
   private rollInputs() {
     return {
       dimsFor: (sheetId: string) => { const s = this.sheets.get(sheetId); return s ? { w: s.widthPx, h: s.heightPx } : null; },
-      uppFor: (sheetId: string) => this.sheets.get(sheetId)?.upp ?? null,
+      uppFor: (sheetId: string, shape?: Shape) => {
+        const s = this.sheets.get(sheetId);
+        if (!s) return null;
+        if (!shape) return s.upp ?? null;
+        const resolution = this.scaleFor(s, "polygon", shape.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx]));
+        return resolution.status === "resolved" ? resolution.units_per_px : null;
+      },
     };
   }
 
@@ -3104,9 +3211,10 @@ export class Session {
     // gate applies to — same refusal the measure tools give, never a px label
     // dressed up as feet
     let len_ft: number | undefined;
+    let dimensionScale: Extract<RegionScaleResolution, { status: "resolved" }> | undefined;
     if (a.type === "dimension") {
-      if (s.upp == null) throw new UserError(this.scaleGate(s));
-      len_ft = round2(Math.hypot(a.to![0] - a.from![0], a.to![1] - a.from![1]) * s.upp);
+      dimensionScale = this.requireScale(s, "polyline", [a.from!, a.to!]);
+      len_ft = round2(Math.hypot(a.to![0] - a.from![0], a.to![1] - a.from![1]) * dimensionScale.units_per_px);
     }
     const cond = a.condition ? this.conditionFor(a.condition) : null;
     const m: Markup = {
@@ -3134,6 +3242,8 @@ export class Session {
       id: m.id, sheet: s.key, type: m.type, text: m.text,
       condition: cond?.finish_tag ?? "", condition_id: m.condition_id,
       ...(len_ft !== undefined ? { length_lf: len_ft } : {}),
+      ...(dimensionScale ? { scale_source: dimensionScale.source } : {}),
+      ...(dimensionScale?.region_id ? { scale_region_id: dimensionScale.region_id } : {}),
       note: cond
         ? `Attached to ${cond.finish_tag} — it wears that condition's colour on the canvas and in the marked set.`
         : "Unattached — a note about the sheet. Pass condition to tie it to a scope.",
@@ -3362,6 +3472,7 @@ export class Session {
       // exist, exactly the canvas buildPayload's convention, so a verdict-free
       // export stays byte-identical to a pre-#176 one
       ...(this.approvals.length ? { approvals: this.approvals } : {}),
+      ...(this.regions.length ? { regions: this.regions } : {}),
       sheet_group: [],
       last_group: [],
       sheet_tabs: [],

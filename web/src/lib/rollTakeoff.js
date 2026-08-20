@@ -87,7 +87,9 @@ export function stripSheetRect(strip, upp) {
 // computeRollTakeoff(conditions, shapes, dimsFor, uppFor) →
 //   { byCond: Map(condition_id → summary), cutsBySheet: Map(sheet_id → cut[]) }
 //
-// dimsFor(sheetId) → {w,h}|null (bitmap px), uppFor(sheetId) → feet-per-px|null.
+// dimsFor(sheetId) → {w,h}|null, uppFor(sheetId, shape) → feet-per-px|null.
+// The shape argument lets multi-scale callers resolve a confirmed Project Map
+// zone instead of flattening every room on a sheet onto one fallback scale.
 // Shapes on unscaled/unrendered sheets are skipped — a ring needs real feet.
 // Only floor_area shapes participate: a roll cut is a floor piece. Interior
 // holes (verts_norm_holes) deliberately do NOT shorten cuts — material runs
@@ -115,7 +117,7 @@ export function computeRollTakeoff(conditions, shapes, dimsFor, uppFor) {
     for (const s of shapes) {
       if (s.condition_id !== c.id || s.measure_role !== "floor_area") continue;
       if (!Array.isArray(s.verts_norm) || s.verts_norm.length < 3) continue;
-      const dims = dimsFor(s.sheet_id), upp = uppFor(s.sheet_id);
+      const dims = dimsFor(s.sheet_id), upp = uppFor(s.sheet_id, s);
       if (!dims || !(dims.w > 0) || !(upp > 0)) continue;
       items.push({ id: s.id, name: s.label || "", ring: s.verts_norm.map(([nx, ny]) => ({ x: nx * dims.w * upp, y: ny * dims.h * upp })) });
     }
@@ -136,7 +138,7 @@ export function computeRollTakeoff(conditions, shapes, dimsFor, uppFor) {
     for (const strip of layout.strips) {
       const src = shapeById.get(strip.srcId);
       if (!src) continue;
-      const upp = uppFor(src.sheet_id);
+      const upp = uppFor(src.sheet_id, src);
       const rect = stripSheetRect(strip, upp);
       if (!rect) continue;
       if (!cutsBySheet.has(src.sheet_id)) cutsBySheet.set(src.sheet_id, []);

@@ -461,6 +461,42 @@ test("import_takeoff: empty session adopts wholesale; worked session merges by t
   assert.equal((await call(c, "takeoff_summary")).data.conditions[0].shape_count, 1);
 });
 
+test("project-map regions round-trip through import_takeoff and export_takeoff", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ot-regions-"));
+  const file = path.join(dir, "regions.json");
+  const mapRegion = {
+    id: "region:section-2",
+    sheet_id: KEY,
+    name: "Coupe 2",
+    kind: "section",
+    geometry: { type: "polygon", verts_norm: [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4], [0.1, 0.4]] },
+    purposes: ["semantic", "scale"],
+    revision: 1,
+    scale_profile: { units_per_px: 0.02, label: "1/4\" = 1'-0\"", source: "detected", confirmed: false, confidence: 0.88 },
+    review: { status: "needs_review", fields: { geometry: "confirmed", scale_profile: "needs_review" } },
+  };
+  await writeFile(file, JSON.stringify({
+    schema: "opentakeoff.takeoff_canvas.v1",
+    project_name: "",
+    units: "imperial",
+    sheets: [], conditions: [], shapes: [], markups: [],
+    regions: [mapRegion, { id: "bad" }],
+    sheet_group: [], last_group: [], sheet_tabs: [], sheet_levels: {},
+  }));
+
+  const client = await pair();
+  await call(client, "load_plan", { path: PLAN });
+  const imported = await call(client, "import_takeoff", { path: file });
+  assert.equal(imported.isError, false);
+  assert.equal(imported.data.regions_added, 1);
+  const exported = await call(client, "export_takeoff");
+  assert.deepEqual(exported.data.regions, [mapRegion]);
+
+  const again = await call(client, "import_takeoff", { path: file });
+  assert.equal(again.data.regions_added, 0);
+  assert.equal((await call(client, "export_takeoff")).data.regions.length, 1);
+});
+
 // #207 — imported correction rules re-run through the canvas's own engine:
 // one reviewed:false batch, per-rule disclosure, idempotent, undone whole.
 // The mask is synthetic (planted in the session's cache — ensureMask returns

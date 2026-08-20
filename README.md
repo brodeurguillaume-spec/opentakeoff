@@ -274,6 +274,13 @@ Plus the full manual kit — **Area, Rectangle, Linear, Curved Line, Surface Are
 Count**, and **Cut Out** deducts — and a **Zone check** that answers "what's in this wing?"
 without touching the takeoff.
 
+**Project Map** is the durable companion: trace and name sheet-scoped rooms, plans,
+sections, elevations, or details without needing a scale. The semantic outlines stay hidden
+outside Map mode, persist with the project, and can be renamed, redrawn, deleted, or undone.
+A zone may also carry a human-confirmed scale for an enlarged plan or detail. That scale applies
+only inside its outline; nested zones override parents, while a measurement crossing a scale
+boundary refuses and asks you to split it instead of guessing.
+
 **⟂ Transitions** derives the line where two finishes meet, from rooms you already measured.
 Finishes changing inside one open space commit as a dashed butt-joint run you accept; rooms
 parallel across a wall are **reported and never counted**, because that transition is a
@@ -296,7 +303,8 @@ the preview thickens, a chip shows the locked angle and the live segment length.
 ### Scale that matches real plan sets
 Auto-detects the drawn scale note, or **calibrate** from any known dimension. Scale is
 remembered **per sheet**, because plan sets are never one uniform scale and tools that assume
-they are get the numbers wrong. **Check a dimension** (`K`) is calibrate's read-only twin: pick
+they are get the numbers wrong. Named Project Map zones add the second level: a confirmed zone
+scale overrides the sheet fallback only inside that viewport. **Check a dimension** (`K`) is calibrate's read-only twin: pick
 a printed dimension string, type what the drawing says, and get a graded verdict (green within
 1%, amber within 5%, red past it) plus a one-tap **Recalibrate to this**. Every scale
 acceptance drops an ephemeral calibrated ruler bar on the sheet, so a 2×-off scale is obvious
@@ -446,6 +454,7 @@ plus a vision-capable model id.
 | **Ingest** | PDF, image, or `.zip` plan set — unpacked in-browser, multi-page, multi-file, up to 4 sheets side-by-side |
 | **Scale** | Auto-detect the drawn note, calibrate from a known dimension, or verify one with a graded check — per sheet |
 | **Measure** | One-Click Area (vector flood + raster fallback), Area, Rectangle, Linear, Curved Line, Surface Area, Count, Cut Out deducts, ⟂ Transitions, Zone check — imperial or metric |
+| **Organize** | Persistent Project Map zones for named rooms, plans, sections, elevations, details, and other semantic areas — no scale required |
 | **Drawing aids** | 45°/90° angle lock with `⇧` hard-lock, live angle + segment-length readout at the cursor, endpoint Snap (beta) |
 | **Conditions** | Color + CAD hatch per finish, waste %, ×N multiplier, wall height, border thickness, schedule import, browser-wide library |
 | **Supporting Materials** | Labor + subfloor type, coverage rate × basis (incl. figured seam LF) → rounded order quantities, trowel/roller presets, grout calculator |

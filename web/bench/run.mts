@@ -36,7 +36,7 @@
 import { createRequire } from "module";
 import { readFileSync, readdirSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { extractVectorGeometry, buildMask, floodRegionSealed, sealRadiiFor, doorWedgeCapPx, minPassRadiusFor, traceRegion, oneClickRing, snapNearest, MASK_MAX_DIM, DETERMINISM_MIN_MPPF, SNAP_TOL_PX } from "../src/lib/oneclick.ts";
 import type { FloodResult, Point, NearestFn } from "../src/lib/oneclick.ts";
 import { syntheticCorpus, WALL_SEMANTICS, KNOWN_WALL_SEMANTICS } from "./corpus.ts";
@@ -245,7 +245,9 @@ for (const c of syntheticCorpus()) {
 // (human-measured plans nobody calibrates against) — included only with
 // BENCH_SEALED=1 so day-to-day runs can't overfit to them.
 const req = createRequire(import.meta.url);
-const pdfjs = await import(req.resolve("pdfjs-dist/legacy/build/pdf.mjs"));
+// Dynamic import requires a file URL on Windows; createRequire.resolve returns
+// an absolute C:\\... path there, which Node otherwise parses as a URL scheme.
+const pdfjs = await import(pathToFileURL(req.resolve("pdfjs-dist/legacy/build/pdf.mjs")).href);
 const caseFiles = readdirSync(join(here, "corpus")).filter((f) => f.endsWith(".json")).map((f) => join(here, "corpus", f));
 if (process.env.BENCH_SEALED) {
   try {

@@ -12,7 +12,7 @@ test("bridgeParent enables only an explicitly embedded loopback canvas", () => {
   assert.equal(bridgeParent({ search: "?grumpBridge=1" } as Location, "https://example.com/"), null);
 });
 
-test("shapeFacts reports review, undo, edits and deletes for machine shapes", () => {
+test("shapeFacts reports review, undo, edits, deletes and restores for machine shapes", () => {
   const pending = { id: "s1", origin: { actor: "agent", reviewed: false } };
   const accepted = { id: "s1", origin: { actor: "agent", reviewed: true } };
   assert.deepEqual(shapeFacts([pending], [accepted], { type: "review", ids: ["s1"] }), [
@@ -23,6 +23,9 @@ test("shapeFacts reports review, undo, edits and deletes for machine shapes", ()
   ]);
   assert.deepEqual(shapeFacts([pending], [], { type: "delete", ids: ["s1"] }), [
     { type: "shape.deleted", payload: { shape_ids: ["s1"] } },
+  ]);
+  assert.deepEqual(shapeFacts([], [pending], { type: "add", restore: true, shapes: [pending] }), [
+    { type: "shape.restored", payload: { shapes: [pending] } },
   ]);
   const edited = { ...accepted, verts_norm: [[0, 0], [1, 0], [1, 1]] };
   assert.deepEqual(shapeFacts([accepted], [edited], { type: "geom", id: "s1" }), [
