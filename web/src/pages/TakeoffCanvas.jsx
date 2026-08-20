@@ -25,7 +25,7 @@ import { extractSvgPrimitives, svgToStamp } from "../lib/svgImport.js";
 import { transformPath, svgPlacedBox } from "../lib/svgpath.js";
 import { ingestFiles } from "../lib/ingest.js";
 import { parseTakeoffImport, mergeTakeoffImport } from "../lib/importTakeoff.js";
-import { createGrumpBridge, shapeFacts } from "../lib/grumpBridge.js";
+import { bridgeParent, createGrumpBridge, shapeFacts } from "../lib/grumpBridge.js";
 import ToolMenu from "../components/ToolMenu.jsx";
 import PlanNavigator from "../components/PlanNavigator.jsx";
 import ReportPanel from "../components/ReportPanel.jsx";
@@ -225,6 +225,7 @@ const TOOL_VERB = {
 // live in components/TakeoffsPanel.jsx — the panel is their only surface now.
 
 export default function TakeoffCanvas() {
+  const grumpEmbedded = bridgeParent() !== null;
   // Client-only: a single local workspace in this browser (no project id, no backend).
   const [sheets, setSheets] = useState([]);
   const [active, setActive] = useState("");      // active source PDF file name
@@ -5511,7 +5512,7 @@ export default function TakeoffCanvas() {
       // with the agent configured, earns an OFFER — never an auto-run. Any
       // other outcome (success, near-miss reject, dispatcher refusal) clears
       // a stale offer so ⏎ can never become a surprise agent run.
-      if (shouldOfferAgentHandoff(o, isAiConfigured())) offerAgentHandoff(text);
+      if (!grumpEmbedded && shouldOfferAgentHandoff(o, isAiConfigured())) offerAgentHandoff(text);
       else clearAgentOffer();
       return o.ok;
     };
@@ -5546,6 +5547,7 @@ export default function TakeoffCanvas() {
   const pendingAgentOfferRef = useRef(null);         // { transcript } | null — the chip is the render, the ref is the logic
   const agentOfferTimerRef = useRef(0);
   function offerAgentHandoff(transcript) {
+    if (grumpEmbedded) return;
     clearTimeout(agentOfferTimerRef.current);
     pendingAgentOfferRef.current = { transcript };
     setVoiceChip({ text: 'not a command — ⏎ or say "ask the agent" to run it on YOUR agent (your endpoint, your key) · proposals land for review · Esc dismisses', tone: "offer" });
@@ -5558,6 +5560,7 @@ export default function TakeoffCanvas() {
     setVoiceChip((c) => (c && c.tone === "offer" ? null : c));
   }
   function confirmAgentHandoff() {
+    if (grumpEmbedded) return;
     const t = pendingAgentOfferRef.current?.transcript;
     clearAgentOffer();
     if (!t) return;
@@ -8616,7 +8619,7 @@ export default function TakeoffCanvas() {
           {panelBtn(() => setLeftTab((t) => (t === "stamp" ? null : "stamp")), "stamp", "Stamps — reusable annotations dropped click-to-place", leftTab === "stamp", stampLib.stamps.length)}
           {panelBtn(() => setLeftTab((t) => (t === "rfi" ? null : "rfi")), "rfi", "RFI register — raise, track, and export Requests For Information", leftTab === "rfi", rfis.length)}
           {panelBtn(toggleTakeoffs, "takeoffs", "Takeoffs — conditions + running totals", takeoffsOpen, visibleShapes.length)}
-          {panelBtn(() => setAgentOpen((o) => !o), "target", "Agent — describe a takeoff; it stages dashed proposals you accept or reject (bring your own AI key)", agentOpen, agentProposals.length)}
+          {!grumpEmbedded && panelBtn(() => setAgentOpen((o) => !o), "target", "Agent — describe a takeoff; it stages dashed proposals you accept or reject (bring your own AI key)", agentOpen, agentProposals.length)}
           {rollByCond.size > 0 && panelBtn(() => setRollPanelOpen((o) => !o), "roll", "Roll goods — the cut diagram, cutting order, and figured order footage", rollPanelOpen, rollByCond.size)}
           {layerEntries.length > 0 && panelBtn(() => setLayersOpen((o) => !o), "layers", "PDF layers — what this drawing's own layer table states each ink is; set what One-Click treats as wall and what it ignores", layersOpen, layerEntries.reduce((n, e) => n + e.layers.length, 0))}
           {panelBtn(() => setShowRevisions(true), "revisions", "Revisions — save the takeoff at each bid revision, compare what moved", showRevisions)}
@@ -8628,7 +8631,7 @@ export default function TakeoffCanvas() {
             Takeoffs panel). Honest empty state until the BYO-AI seam is
             configured; otherwise the goal box, the streaming run log, and the
             per-proposal accept/reject desk. */}
-        {agentOpen && (
+        {!grumpEmbedded && agentOpen && (
           <AgentPanel
             configured={isAiConfigured()}
             running={agentRunning}
@@ -8818,7 +8821,7 @@ export default function TakeoffCanvas() {
       {/* BYO-key AI settings — the single config surface for the ai.js seam
           (the Agent panel links here; closing re-renders, so `configured`
           re-reads immediately). */}
-      {showAiSettings && <AiSettings onClose={() => setShowAiSettings(false)} />}
+      {!grumpEmbedded && showAiSettings && <AiSettings onClose={() => setShowAiSettings(false)} />}
       {/* the manual, last in the tree so it sits above every panel and dock */}
       {guideOpen && <UserGuide onClose={() => setGuideOpen(false)} />}
     </div>

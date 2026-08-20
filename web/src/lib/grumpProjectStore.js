@@ -50,6 +50,7 @@ export function createGrumpProjectStore(
   let plansHydration = null;
   let annotationsHydration = null;
   let revisionsHydration = null;
+  let annotationsSaveChain = Promise.resolve();
 
   const projectUrl = (suffix = "") => `${apiBase}${suffix}`;
   const planUrl = (name) => projectUrl(`/plans/${encodeURIComponent(name)}`);
@@ -122,20 +123,45 @@ export function createGrumpProjectStore(
     }
   }
 
-  async function saveAnnotations(payload) {
+  async function putAnnotations(persisted) {
+    const maxAttempts = 3;
+    let lastError = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      let response;
+      try {
+        response = await fetchLike(projectUrl("/takeoff"), {
+          ...options,
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(persisted),
+        });
+      } catch (error) {
+        lastError = error;
+        continue;
+      }
+      if (response.ok) return;
+      const error = await responseError(response, "Couldn't mirror the takeoff to the project folder.");
+      if (response.status < 500 && response.status !== 408 && response.status !== 429) throw error;
+      lastError = error;
+    }
+    throw lastError || new Error("Couldn't mirror the takeoff to the project folder.");
+  }
+
+  function saveAnnotations(payload) {
     // The plain IndexedDB store injects its schema while writing, but the
     // gateway receives the object before that local normalization. Normalize
     // once at this boundary so browser cache and durable project JSON persist
     // the exact same takeoff document.
     const persisted = { ...payload, schema: TAKEOFF_SCHEMA };
-    await base.saveAnnotations(persisted);
-    const response = await fetchLike(projectUrl("/takeoff"), {
-      ...options,
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(persisted),
+    const save = annotationsSaveChain.then(async () => {
+      // The project file is canonical. Update the fast browser cache only
+      // after the durable write succeeds so a reload can never roll back a
+      // change that appeared to have been saved locally.
+      await putAnnotations(persisted);
+      await base.saveAnnotations(persisted);
     });
-    if (!response.ok) throw await responseError(response, "Couldn't mirror the takeoff to the project folder.");
+    annotationsSaveChain = save.catch(() => {});
+    return save;
   }
 
   async function putRevision(record) {

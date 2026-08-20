@@ -194,7 +194,8 @@ are the rules that make this one safe to hand a model, and why each one exists:
    A local GRUMP shell may deliver that same native export directly to an embedded canvas;
    the canvas still runs the identical operator-wins merge and review gate, and reports the
    resulting Accept/Undo/edit/delete facts back to the session. This bridge is opt-in and
-   loopback-only; opening OpenTakeoff normally does not enable it.
+   loopback-only. While embedded, GRUMP is the single agent authority, so the native BYO-AI
+   Agent rail and settings are hidden; opening OpenTakeoff normally keeps them unchanged.
 6. **The deliverable is a marked-up planset, not JSON.** `export_marked_pdf` burns the work
    into the drawings as drawn — condition colors, hatches, quantity chips, count markers —
    behind a legend cover with totals and a tally of how much of the set a person has actually

@@ -107,6 +107,86 @@ test("disk mirror adds the takeoff schema before sending a raw canvas payload", 
   assert.equal(uploaded.schema, "opentakeoff.takeoff_canvas.v1");
 });
 
+test("failed durable takeoff writes never advance the browser cache", async () => {
+  let localSaves = 0;
+  let attempts = 0;
+  const base: any = {
+    saveAnnotations: async () => { localSaves += 1; },
+  };
+  const store = createGrumpProjectStore(base, "bid-42", async () => {
+    attempts += 1;
+    return response({ message: "disk unavailable" }, 503);
+  });
+
+  await assert.rejects(
+    store.saveAnnotations({ ...empty, shapes: [{ id: "S1" }] } as any),
+    /disk unavailable/,
+  );
+  assert.equal(attempts, 3);
+  assert.equal(localSaves, 0);
+});
+
+test("permanent client errors are not retried or cached locally", async () => {
+  let attempts = 0;
+  let localSaves = 0;
+  const base: any = {
+    saveAnnotations: async () => { localSaves += 1; },
+  };
+  const store = createGrumpProjectStore(base, "bid-42", async () => {
+    attempts += 1;
+    return response({ message: "invalid takeoff" }, 400);
+  });
+
+  await assert.rejects(store.saveAnnotations(empty), /invalid takeoff/);
+  assert.equal(attempts, 1);
+  assert.equal(localSaves, 0);
+});
+
+test("transient takeoff mirror failures are retried before caching locally", async () => {
+  let attempts = 0;
+  const local: any[] = [];
+  const base: any = {
+    saveAnnotations: async (payload: any) => { local.push(payload); },
+  };
+  const store = createGrumpProjectStore(base, "bid-42", async () => {
+    attempts += 1;
+    return attempts < 3
+      ? response({ message: "try again" }, 503)
+      : response({ saved: true });
+  });
+
+  await store.saveAnnotations({ ...empty, shapes: [{ id: "S1" }] } as any);
+  assert.equal(attempts, 3);
+  assert.equal(local.length, 1);
+  assert.equal(local[0].shapes[0].id, "S1");
+});
+
+test("rapid takeoff saves stay ordered across the durable mirror and browser cache", async () => {
+  const durableOrder: string[] = [];
+  const localOrder: string[] = [];
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const base: any = {
+    saveAnnotations: async (payload: any) => { localOrder.push(payload.shapes[0].id); },
+  };
+  const store = createGrumpProjectStore(base, "bid-42", async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const id = JSON.parse(String(init?.body)).shapes[0].id;
+    if (id === "S1") await firstBlocked;
+    durableOrder.push(id);
+    return response({ saved: true });
+  });
+
+  const first = store.saveAnnotations({ ...empty, shapes: [{ id: "S1" }] } as any);
+  const second = store.saveAnnotations({ ...empty, shapes: [{ id: "S2" }] } as any);
+  await Promise.resolve();
+  assert.deepEqual(durableOrder, []);
+  releaseFirst();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(durableOrder, ["S1", "S2"]);
+  assert.deepEqual(localOrder, ["S1", "S2"]);
+});
+
 test("plan hydration pushes browser-only PDFs and restores disk-only PDFs", async () => {
   const pdfs = new Map<string, Uint8Array>([["local.pdf", new TextEncoder().encode("%PDF-local")]]);
   const uploads: string[] = [];

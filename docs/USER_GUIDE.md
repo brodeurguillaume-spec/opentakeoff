@@ -807,6 +807,11 @@ confirmation, and Accept, `⌘Z`, correction, and deletion remain normal Canvas 
 receives the resulting facts so its chat can resume from what you actually decided. The bridge is
 disabled in a normal standalone tab and carries no AI key into the browser.
 
+In that embedded mode, GRUMP replaces—not supplements—the native Agent panel. The target-icon
+rail button, native BYO-AI settings, and voice handoff into the native loop are hidden so there is
+only one chat, one proposal queue, and one durable review history. OpenTakeoff opened by itself
+still exposes the complete native Agent panel described in §13.
+
 GRUMP's proposal list can accept or reject one persisted task while other proposals remain pending.
 Clicking a proposal card is only a visual focus: the corresponding Canvas outline becomes thicker
 in the card's accent colour. A normal left-click back in the plan clears that focus and the active
