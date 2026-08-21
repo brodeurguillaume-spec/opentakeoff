@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { bridgeParent, createGrumpBridge, regionFacts, shapeFacts } from "../src/lib/grumpBridge.js";
+import {
+  bridgeParent,
+  createGrumpBridge,
+  regionFacts,
+  shapeFacts,
+  shouldApplyRegionProposal,
+} from "../src/lib/grumpBridge.js";
 
 test("bridgeParent enables only an explicitly embedded loopback canvas", () => {
   assert.equal(
@@ -48,6 +54,16 @@ test("regionFacts journals create, review, edit, delete and undo without owning 
   assert.equal(regionFacts([confirmed], [renamed], { type: "replace", region: renamed })[0].type, "region.edited");
   assert.equal(regionFacts([renamed], [], { type: "delete", id: "region:1" })[0].type, "region.deleted");
   assert.equal(regionFacts([], [renamed], { type: "replace", region: renamed, audit: "restore" })[0].type, "region.restored");
+});
+
+test("historical region proposals cannot roll back a newer human review", () => {
+  const proposed = { id: "region:1", revision: 1, review: { status: "proposed" } };
+  const confirmed = { id: "region:1", revision: 2, review: { status: "confirmed" } };
+  assert.equal(shouldApplyRegionProposal(null, proposed), true);
+  assert.equal(shouldApplyRegionProposal({ ...proposed, id: "region:other" }, proposed), true);
+  assert.equal(shouldApplyRegionProposal(proposed, confirmed), true);
+  assert.equal(shouldApplyRegionProposal(proposed, proposed), false);
+  assert.equal(shouldApplyRegionProposal(confirmed, proposed), false);
 });
 
 test("bridge applies a proposal once and emits a correlated Canvas fact", async () => {

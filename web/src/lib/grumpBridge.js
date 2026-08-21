@@ -94,6 +94,17 @@ export function regionFacts(before, after, cmd) {
   return [{ type: "region.edited", payload: { region_id: requestedId, region: nextRegion } }];
 }
 
+// The gateway journal is append-only and replays the original region.proposed
+// event on every fresh shell. The durable Canvas snapshot may already contain
+// a later human revision of that region. Never let the historical proposal
+// replace that newer review when the browser reconnects.
+export function shouldApplyRegionProposal(existing, proposed) {
+  if (!existing || existing.id !== proposed?.id) return true;
+  const existingRevision = Number.isInteger(existing.revision) ? existing.revision : 0;
+  const proposedRevision = Number.isInteger(proposed?.revision) ? proposed.revision : 0;
+  return proposedRevision > existingRevision;
+}
+
 export function createGrumpBridge({ applyTakeoff, applyRegionProposal = async (_payload, _event) => {}, applyProposalAction = async (_payload, _event) => {}, applyProposalFact = async (_type, _payload, _event) => {}, applyProposalFocus = async (_payload) => {}, applyGeometryCapture = async (_type, _payload, _event) => {}, getContext = /** @type {() => any} */ (() => null), onError = () => {}, windowLike = window, documentLike = document }) {
   const parentOrigin = bridgeParent(windowLike.location, documentLike.referrer);
   if (!parentOrigin || windowLike.parent === windowLike) return null;

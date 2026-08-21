@@ -25,7 +25,13 @@ import { extractSvgPrimitives, svgToStamp } from "../lib/svgImport.js";
 import { transformPath, svgPlacedBox } from "../lib/svgpath.js";
 import { ingestFiles } from "../lib/ingest.js";
 import { parseTakeoffImport, mergeTakeoffImport } from "../lib/importTakeoff.js";
-import { bridgeParent, createGrumpBridge, regionFacts, shapeFacts } from "../lib/grumpBridge.js";
+import {
+  bridgeParent,
+  createGrumpBridge,
+  regionFacts,
+  shapeFacts,
+  shouldApplyRegionProposal,
+} from "../lib/grumpBridge.js";
 import ToolMenu from "../components/ToolMenu.jsx";
 import ProjectMapPanel from "../components/ProjectMapPanel.jsx";
 import PlanNavigator from "../components/PlanNavigator.jsx";
@@ -2283,6 +2289,14 @@ export default function TakeoffCanvas() {
       const error = new Error(`Couldn't sync Project Map: open ${parsed.file} in this project first.`);
       error.retryable = true;
       throw error;
+    }
+    const currentRegions = Array.isArray(grumpTakeoffPayloadRef.current?.regions)
+      ? grumpTakeoffPayloadRef.current.regions
+      : regions;
+    const existing = currentRegions.find((item) => item.id === region.id);
+    if (!shouldApplyRegionProposal(existing, region)) {
+      focusMapRegion(existing);
+      return { changed: false, region_id: existing.id, stale_replay: true };
     }
     const result = dispatchRegion(
       { type: "replace", region },

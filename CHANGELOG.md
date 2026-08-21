@@ -26,6 +26,11 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 - **The bridge now tells GRUMP which PDF and sheet are actually visible.** Document, active sheet, and side-by-side sheet IDs are published as transient context rather than journaled takeoff facts. This lets the shell filter its durable proposal queue without deleting hidden work; selecting a proposal on another open sheet navigates there before applying the temporary highlight.
 
 ### Fixed
+- **A historical GRUMP Project Map proposal can no longer roll back a human review on reload.**
+  The append-only bridge may replay an older `region.proposed` event after the Canvas has already
+  hydrated a newer operator-reviewed region from durable project storage. The Canvas now applies a
+  same-ID proposal only when its revision is strictly newer; equal and older revisions focus the
+  existing region without replacing its geometry, evidence, verdict, or correction history.
 - **The GRUMP shell no longer exposes two competing agents.** Under the authenticated loopback bridge, the native BYO-AI Agent rail, settings modal, and voice handoff are suppressed; GRUMP remains the sole chat and durable proposal authority. Standalone OpenTakeoff keeps the native Agent panel unchanged.
 - **GRUMP project autosaves are durable before they are visible as cached saves.** Takeoff writes are serialized, retry transient gateway failures, commit the project-folder JSON first, and update IndexedDB only after that succeeds. A reload can no longer roll back a change that existed only in the browser cache.
 - **The complete Web quality gate is green on Windows again.** CSV golden tests now normalize only the checkout representation of their expected fixture, preserving the exporter's canonical LF bytes without letting Git's CRLF materialization create seven false failures. The PDF benchmark also converts `createRequire.resolve()`'s Windows path to a `file:` URL before dynamic import, so `npm run check` reaches and passes the real corpus instead of stopping at `ERR_UNSUPPORTED_ESM_URL_SCHEME`.
