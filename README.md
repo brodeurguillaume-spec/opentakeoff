@@ -288,6 +288,10 @@ semantic type, review state, scale and analysis profiles, per-field confidence, 
 links to other zones or sheets. Human **Accept / Needs review / Reject** verdicts preserve the
 zone, while **Modify / Redraw / Delete** remain explicit geometry actions. A correction note can
 be saved with the verdict so GRUMP's journal remembers why the estimator changed the map.
+When embedded in the GRUMP shell, a `region.proposed` event can also add a candidate card
+directly to this desk. It opens on the correct sheet, remains visibly **Proposed**, and carries
+the text, boundary, and bounded structural evidence GRUMP used. It never creates takeoff or
+becomes confirmed until the estimator explicitly reviews it.
 
 **⟂ Transitions** derives the line where two finishes meet, from rooms you already measured.
 Finishes changing inside one open space commit as a dashed butt-joint run you accept; rooms

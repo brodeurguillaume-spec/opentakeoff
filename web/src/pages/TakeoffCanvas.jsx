@@ -400,6 +400,7 @@ export default function TakeoffCanvas() {
   const grumpBridgeRef = useRef(null);              // optional loopback parent bridge; null in normal OpenTakeoff
   const grumpCanvasContextRef = useRef(null);        // current document/sheet snapshot sent outside the durable event journal
   const grumpApplyTakeoffRef = useRef(null);        // bridge callback always reads the current render's project state
+  const grumpRegionProposalRef = useRef(null);      // persistent Project Map candidate from the gateway
   const grumpProposalActionRef = useRef(null);      // individual review/reject commands from the GRUMP proposal list
   const grumpProposalFactRef = useRef(null);        // terminal review/edit facts replayed after their proposal import
   const grumpProposalFocusRef = useRef(null);       // transient card selection; never persisted as takeoff data
@@ -508,7 +509,7 @@ export default function TakeoffCanvas() {
     }
     return res;
   }
-  function dispatchRegion(cmd, { record = true, reprice = false, publishFacts = true } = {}) {
+  function dispatchRegion(cmd, { record = true, reprice = false, publishFacts = true, factActor = "human", factEventId = null } = {}) {
     const sourceRegions = Array.isArray(grumpTakeoffPayloadRef.current?.regions)
       ? grumpTakeoffPayloadRef.current.regions
       : regions;
@@ -548,7 +549,8 @@ export default function TakeoffCanvas() {
       redoStackRef.current = st.redo;
     }
     for (const fact of publishFacts ? regionFacts(sourceRegions, res.regions, cmd) : []) {
-      grumpBridgeRef.current?.publish(fact.type, fact.payload, "human");
+      const eventId = factEventId ? `region-fact:${factEventId}:${fact.type}` : null;
+      grumpBridgeRef.current?.publish(fact.type, fact.payload, factActor, eventId);
     }
     return res;
   }
@@ -2267,6 +2269,34 @@ export default function TakeoffCanvas() {
   };
   grumpApplyTakeoffRef.current = applyAgentTakeoff;
 
+  grumpRegionProposalRef.current = (payload, gatewayEvent) => {
+    if (!projectHydrated) {
+      const error = new Error("Couldn't sync Project Map: the project is still loading.");
+      error.retryable = true;
+      throw error;
+    }
+    const proposed = sanitizeRegions([payload?.region]);
+    if (proposed.length !== 1) throw new Error("Couldn't sync Project Map: GRUMP returned an invalid region.");
+    const region = proposed[0];
+    const parsed = parseSheetKey(region.sheet_id);
+    if (!sheets.some((sheet) => sheet.name === parsed.file)) {
+      const error = new Error(`Couldn't sync Project Map: open ${parsed.file} in this project first.`);
+      error.retryable = true;
+      throw error;
+    }
+    const result = dispatchRegion(
+      { type: "replace", region },
+      {
+        factActor: "canvas",
+        factEventId: gatewayEvent?.event_id || null,
+      },
+    );
+    if (result.error) throw new Error(`Couldn't sync Project Map: ${result.error}`);
+    focusMapRegion(region);
+    setCommitMsg(`GRUMP proposed map zone “${region.name}” — review, modify, or reject it in Project Map.`);
+    return { changed: result.changed, region_id: region.id };
+  };
+
   const importTakeoffFile = async (file) => {
     if (!file) return;
     try {
@@ -2281,6 +2311,7 @@ export default function TakeoffCanvas() {
   useEffect(() => {
     const bridge = createGrumpBridge({
       applyTakeoff: (payload, event) => grumpApplyTakeoffRef.current(payload, event),
+      applyRegionProposal: (payload, event) => grumpRegionProposalRef.current(payload, event),
       applyProposalAction: (payload, event) => grumpProposalActionRef.current(payload, event),
       applyProposalFact: (type, payload, event) => grumpProposalFactRef.current(type, payload, event),
       applyProposalFocus: (payload) => grumpProposalFocusRef.current(payload),

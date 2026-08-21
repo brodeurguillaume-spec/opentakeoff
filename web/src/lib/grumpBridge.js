@@ -94,7 +94,7 @@ export function regionFacts(before, after, cmd) {
   return [{ type: "region.edited", payload: { region_id: requestedId, region: nextRegion } }];
 }
 
-export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_payload, _event) => {}, applyProposalFact = async (_type, _payload, _event) => {}, applyProposalFocus = async (_payload) => {}, applyGeometryCapture = async (_type, _payload, _event) => {}, getContext = /** @type {() => any} */ (() => null), onError = () => {}, windowLike = window, documentLike = document }) {
+export function createGrumpBridge({ applyTakeoff, applyRegionProposal = async (_payload, _event) => {}, applyProposalAction = async (_payload, _event) => {}, applyProposalFact = async (_type, _payload, _event) => {}, applyProposalFocus = async (_payload) => {}, applyGeometryCapture = async (_type, _payload, _event) => {}, getContext = /** @type {() => any} */ (() => null), onError = () => {}, windowLike = window, documentLike = document }) {
   const parentOrigin = bridgeParent(windowLike.location, documentLike.referrer);
   if (!parentOrigin || windowLike.parent === windowLike) return null;
   let sessionId = null;
@@ -102,6 +102,8 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
   const handled = new Set();
   const deferredProposals = new Map();
   const retryingProposals = new Set();
+  const deferredRegionProposals = new Map();
+  const retryingRegionProposals = new Set();
   const deletedShapeIds = new Set();
   const reviewedShapeTimestamps = new Map();
   const editedShapes = new Map();
@@ -141,12 +143,18 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
   };
 
   const enqueueTakeoffProposal = (event) => enqueueCanvasMutation(() => applyTakeoffProposal(event));
+  const enqueueRegionProposal = (event) => enqueueCanvasMutation(() => applyRegionProposalEvent(event));
 
   const retryDeferredProposals = () => {
     for (const [eventId, event] of deferredProposals) {
       if (retryingProposals.has(eventId)) continue;
       retryingProposals.add(eventId);
       enqueueTakeoffProposal(event).finally(() => retryingProposals.delete(eventId));
+    }
+    for (const [eventId, event] of deferredRegionProposals) {
+      if (retryingRegionProposals.has(eventId)) continue;
+      retryingRegionProposals.add(eventId);
+      enqueueRegionProposal(event).finally(() => retryingRegionProposals.delete(eventId));
     }
   };
 
@@ -211,6 +219,23 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
         proposal_event_id: event.event_id,
         message: messageText,
       }, "canvas", `canvas-rejected:${event.event_id}`);
+    }
+  };
+
+  const applyRegionProposalEvent = async (event) => {
+    if (handled.has(event.event_id)) return;
+    try {
+      await applyRegionProposal(event.payload || {}, event);
+      handled.add(event.event_id);
+      deferredRegionProposals.delete(event.event_id);
+    } catch (error) {
+      if (error?.retryable === true) {
+        deferredRegionProposals.set(event.event_id, event);
+        return;
+      }
+      handled.add(event.event_id);
+      deferredRegionProposals.delete(event.event_id);
+      onError(String(error?.message || error));
     }
   };
 
@@ -286,6 +311,11 @@ export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_
       } catch (error) {
         onError(String(error?.message || error));
       }
+      return;
+    }
+    if (event.type === "region.proposed") {
+      if (handled.has(event.event_id)) return;
+      await enqueueRegionProposal(event);
       return;
     }
     if (data.kind !== "takeoff.proposed" || handled.has(event.event_id)) return;

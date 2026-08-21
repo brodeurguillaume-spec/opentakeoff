@@ -474,6 +474,13 @@ Rejecting or flagging a scale zone suspends that calibration immediately. Measur
 it refuse until the card and its scale field are human-confirmed again; OTO never falls through
 silently to the sheet scale after a rejected viewport.
 
+Under the optional GRUMP bridge, the same desk receives durable mapping candidates from chat.
+GRUMP proposals arrive as **Proposed** zones on their source sheet, with evidence and confidence
+shown on the card. Selecting the incoming zone opens Map and emphasizes its outline. Review it
+with **Accept**, **Needs review**, or **Reject**, or use **Modify / Redraw** first. Receiving or
+replaying the proposal never confirms it and never creates a takeoff quantity; if the project is
+still loading, the bridge waits for hydration and applies the candidate afterward.
+
 ### The 45°/90° angle lock
 
 With the **45°** toggle on (it's on by default), the segment you're drawing locks to the 45° family — 0°, 45°, 90°, 135° across the sheet — whenever the cursor comes within ~4° of an axis. The lock is quiet: the star swells, the preview line thickens, and the chip reads the locked angle plus the live segment length. **The click commits the exactly-on-axis point**, so walls come out dead square. Hold `⇧` to force the lock at any cursor angle; toggle **45°** off for free-angle tracing.
@@ -837,6 +844,11 @@ you are looking at. Hidden proposals are not rejected or discarded: GRUMP keeps 
 their original plan-set and discipline context, and its badge can still report the project-wide
 total. If you select a proposal whose sheet is already open elsewhere in the Canvas, OpenTakeoff
 switches to that sheet before highlighting it.
+
+GRUMP Project Map proposals use the separate `region.proposed` path. The Canvas validates and
+persists the region, publishes a correlated `region.created` fact, and keeps the task pending until
+your Project Map verdict. A browser reload replays that event idempotently instead of duplicating
+the zone.
 
 | Group | Tools |
 |---|---|

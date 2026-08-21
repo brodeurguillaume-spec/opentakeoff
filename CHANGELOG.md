@@ -5,6 +5,11 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 ## Unreleased — GRUMP loopback bridge
 
 ### Added
+- **GRUMP can now land a persistent Project Map proposal without creating takeoff.** The loopback
+  bridge accepts the server-owned `region.proposed` event, waits for project hydration when needed,
+  inserts the normalized candidate on its source sheet, opens Map with the outline selected, and
+  emits a deterministic `region.created` Canvas fact. Journal replay is idempotent. The card stays
+  Proposed until an explicit human verdict; no condition or quantity is created along this path.
 - **Project Map is now a review desk, not only a drawing mode.** A separate panel lists the
   visible sheets or the whole project's zones and opens durable cards for semantic purpose,
   scale/analysis profiles, field review, evidence, links, hierarchy and confidence. Human

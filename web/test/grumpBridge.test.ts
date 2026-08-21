@@ -92,6 +92,83 @@ test("bridge applies a proposal once and emits a correlated Canvas fact", async 
   bridge.stop();
 });
 
+test("bridge applies a persistent GRUMP region proposal once", async () => {
+  let listener: any = null;
+  const parent = { postMessage: () => {} };
+  const windowLike: any = {
+    location: { search: "?grumpBridge=1" }, parent,
+    addEventListener: (_name: string, fn: any) => { listener = fn; },
+    removeEventListener: () => {},
+  };
+  const applied: any[] = [];
+  const bridge = createGrumpBridge({
+    windowLike,
+    documentLike: { referrer: "http://127.0.0.1:8765/" } as Document,
+    applyTakeoff: async () => {},
+    applyRegionProposal: async (payload: any, gatewayEvent: any) => {
+      applied.push([payload.region.id, gatewayEvent.event_id]);
+    },
+  });
+  await listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: { source: "grump.gateway", kind: "session", session_id: "s", revision: 1 },
+  });
+  const proposal = {
+    session_id: "s", event_id: "map-proposal:chat-1", revision: 2,
+    type: "region.proposed", payload: { region: { id: "region:grump-map:1" } },
+  };
+  for (let index = 0; index < 2; index++) {
+    await listener({
+      source: parent, origin: "http://127.0.0.1:8765",
+      data: { source: "grump.gateway", kind: "gateway.event", event: proposal },
+    });
+  }
+  assert.deepEqual(applied, [["region:grump-map:1", "map-proposal:chat-1"]]);
+  bridge!.stop();
+});
+
+test("bridge defers a region proposal until Project Map hydration completes", async () => {
+  let listener: any = null;
+  let ready = false;
+  let applied = 0;
+  const parent = { postMessage: () => {} };
+  const windowLike: any = {
+    location: { search: "?grumpBridge=1" }, parent,
+    addEventListener: (_name: string, fn: any) => { listener = fn; },
+    removeEventListener: () => {},
+  };
+  const bridge = createGrumpBridge({
+    windowLike,
+    documentLike: { referrer: "http://127.0.0.1:8765/" } as Document,
+    applyTakeoff: async () => {},
+    applyRegionProposal: async () => {
+      if (!ready) {
+        const error: any = new Error("Project Map not hydrated");
+        error.retryable = true;
+        throw error;
+      }
+      applied++;
+    },
+  });
+  await listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: { source: "grump.gateway", kind: "session", session_id: "s", revision: 1 },
+  });
+  await listener({
+    source: parent, origin: "http://127.0.0.1:8765",
+    data: {
+      source: "grump.gateway", kind: "gateway.event",
+      event: { session_id: "s", event_id: "map-deferred", revision: 2, type: "region.proposed", payload: { region: { id: "region:deferred" } } },
+    },
+  });
+  assert.equal(applied, 0);
+  ready = true;
+  bridge!.publishContext({ sheet_id: "A101.pdf" });
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(applied, 1);
+  bridge!.stop();
+});
+
 test("bridge serializes rapid proposal replay imports", async () => {
   let listener: any = null;
   const parent = { postMessage: () => {} };
