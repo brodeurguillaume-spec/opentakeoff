@@ -54,6 +54,46 @@ export function shapeFacts(before, after, cmd) {
   return [];
 }
 
+export function regionFacts(before, after, cmd) {
+  const previous = new Map((before || []).map((region) => [region.id, region]));
+  const current = new Map((after || []).map((region) => [region.id, region]));
+  const requestedId = cmd?.type === "replace" ? cmd.region?.id : cmd?.id;
+  const oldRegion = requestedId ? previous.get(requestedId) : null;
+  const nextRegion = requestedId ? current.get(requestedId) : null;
+  if (cmd?.audit === "restore" && (oldRegion || nextRegion)) {
+    return [{
+      type: "region.restored",
+      payload: { region_id: requestedId, ...(nextRegion ? { region: nextRegion } : {}), previous_region: oldRegion || null },
+    }];
+  }
+  if (cmd?.type === "delete" && oldRegion && !nextRegion) {
+    return [{ type: "region.deleted", payload: { region_id: requestedId, region: oldRegion } }];
+  }
+  if (cmd?.type !== "replace" || !nextRegion) return [];
+  if (!oldRegion) {
+    return [{ type: "region.created", payload: { region_id: requestedId, region: nextRegion } }];
+  }
+  const oldReview = oldRegion.review || {};
+  const nextReview = nextRegion.review || {};
+  const reviewChanged = oldReview.status !== nextReview.status
+    || oldReview.note !== nextReview.note
+    || oldReview.reason_code !== nextReview.reason_code;
+  if (reviewChanged) {
+    return [{
+      type: "region.reviewed",
+      payload: {
+        region_id: requestedId,
+        decision: nextReview.status,
+        previous_status: oldReview.status,
+        note: nextReview.note || null,
+        reason_code: nextReview.reason_code || null,
+        region: nextRegion,
+      },
+    }];
+  }
+  return [{ type: "region.edited", payload: { region_id: requestedId, region: nextRegion } }];
+}
+
 export function createGrumpBridge({ applyTakeoff, applyProposalAction = async (_payload, _event) => {}, applyProposalFact = async (_type, _payload, _event) => {}, applyProposalFocus = async (_payload) => {}, applyGeometryCapture = async (_type, _payload, _event) => {}, getContext = /** @type {() => any} */ (() => null), onError = () => {}, windowLike = window, documentLike = document }) {
   const parentOrigin = bridgeParent(windowLike.location, documentLike.referrer);
   if (!parentOrigin || windowLike.parent === windowLike) return null;

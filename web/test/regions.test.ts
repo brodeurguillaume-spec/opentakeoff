@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyRegionCommand, mintRegionId, sanitizeRegions } from "../src/lib/regions.js";
+import { applyRegionCommand, mintRegionId, reviewRegion, sanitizeRegions } from "../src/lib/regions.js";
 
 const square = [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4], [0.1, 0.4]];
 const region = (over: Record<string, unknown> = {}) => ({
@@ -19,6 +19,41 @@ test("old payloads without regions load as an empty additive collection", () => 
   assert.deepEqual(sanitizeRegions(undefined), []);
   assert.deepEqual(sanitizeRegions(null), []);
   assert.deepEqual(sanitizeRegions({}), []);
+});
+
+test("review transitions preserve rejected geometry and resolve populated fields", () => {
+  const [proposed] = sanitizeRegions([region({
+    id: "region:review",
+    review: { status: "proposed", fields: { geometry: "proposed" } },
+    scale_profile: { units_per_px: 0.01, label: "1/8 in", confirmed: false },
+    purposes: ["semantic", "scale"],
+  })]);
+  const rejected = reviewRegion(proposed, "rejected", {
+    reviewed_at: "2026-08-21T12:00:00.000Z",
+    note: "Contour follows the hatch instead of the wall.",
+    reason_code: "wrong_boundary",
+  });
+  assert.ok(rejected);
+  assert.deepEqual(rejected.geometry, proposed.geometry);
+  assert.equal(rejected.revision, proposed.revision + 1);
+  assert.equal(rejected.review.status, "rejected");
+  assert.equal(rejected.review.fields?.geometry, "rejected");
+  assert.equal(rejected.review.fields?.scale_profile, "rejected");
+  assert.equal(rejected.review.note, "Contour follows the hatch instead of the wall.");
+  assert.equal(rejected.review.reason_code, "wrong_boundary");
+});
+
+test("an explanation can be saved without changing the current verdict", () => {
+  const [confirmed] = sanitizeRegions([region({ id: "region:explained", review: { status: "confirmed" }, revision: 4 })]);
+  const explained = reviewRegion(confirmed, "confirmed", {
+    reviewed_at: "2026-08-21T12:01:00.000Z",
+    note: "Scale confirmed against dimension string A-3.",
+    reason_code: "human_explanation",
+  });
+  assert.ok(explained);
+  assert.equal(explained.review.status, "confirmed");
+  assert.equal(explained.revision, 5);
+  assert.equal(explained.review.note, "Scale confirmed against dimension string A-3.");
 });
 
 test("a complete region preserves the durable mapping contract", () => {

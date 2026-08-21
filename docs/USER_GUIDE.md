@@ -454,11 +454,25 @@ boundary, OpenTakeoff refuses it and asks you to split the measurement—one geo
 never mixes two calibrations. Changing or deleting a scale zone re-prices affected existing
 shapes; if that would make any shape ambiguous, the edit itself is refused.
 
-Click a saved outline to rename or reclassify it, choose **Redraw** to replace its
-boundary, or **Delete** to remove it. `Ctrl+Z` / `⌘Z` and redo use the same history as
-takeoff edits, including restoring a deleted zone. Project Map zones autosave and return
-with the same sheet after reload. They are distinct from **Zone check**, which is temporary
-and calculates quantities.
+Opening **Map** also opens the **Project Map** desk. **Visible sheets** keeps the list tied to
+the Canvas; **Whole project** shows every mapped sheet. Selecting a card opens its durable
+profile: semantic type and purposes, overall and per-field review, scale and analysis profiles,
+confidence assessments, evidence, links, parent, revision, and last human verdict. The matching
+outline is emphasized on the plan; selecting a card from another sheet navigates to that sheet.
+
+**Accept**, **Needs review**, and **Reject** change the card's review state without erasing its
+geometry. A rejected zone therefore stays visible and can be corrected later. **Modify** edits
+its name, type, or scale; **Redraw** replaces its boundary; **Delete** is the separate action that
+actually removes it. The explanation box records why a correction was made. Under the GRUMP
+bridge, creation, edits, verdicts, explanations, deletion, and undo are also written to the
+durable session journal. `Ctrl+Z` / `⌘Z` and redo use the same history as takeoff edits,
+including restoring a deleted zone. Project Map zones autosave and return with the same sheet
+after reload. They remain distinct from **Zone check**, which is temporary and calculates
+quantities.
+
+Rejecting or flagging a scale zone suspends that calibration immediately. Measurements inside
+it refuse until the card and its scale field are human-confirmed again; OTO never falls through
+silently to the sheet scale after a rejected viewport.
 
 ### The 45°/90° angle lock
 

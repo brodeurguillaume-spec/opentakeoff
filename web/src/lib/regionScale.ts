@@ -178,7 +178,10 @@ export function resolveRegionScale(args: {
     candidate.id !== other.id && isAncestor(candidate, other, byId)));
   const ordered = [...leaves].sort((a, b) => ringArea(a.geometry.verts_norm) - ringArea(b.geometry.verts_norm) || a.id.localeCompare(b.id));
 
-  const unconfirmed = ordered.filter((region) => region.scale_profile?.confirmed !== true);
+  const unconfirmed = ordered.filter((region) =>
+    region.scale_profile?.confirmed !== true
+    || region.review?.status !== "confirmed"
+    || (region.review?.fields?.scale_profile != null && region.review.fields.scale_profile !== "confirmed"));
   if (unconfirmed.length) {
     return {
       status: "unconfirmed",

@@ -282,6 +282,13 @@ A zone may also carry a human-confirmed scale for an enlarged plan or detail. Th
 only inside its outline; nested zones override parents, while a measurement crossing a scale
 boundary refuses and asks you to split it instead of guessing.
 
+Map mode now opens a **Project Map desk** instead of leaving those polygons as anonymous
+outlines. It can inspect the visible sheets or the whole project, and each card exposes its
+semantic type, review state, scale and analysis profiles, per-field confidence, evidence, and
+links to other zones or sheets. Human **Accept / Needs review / Reject** verdicts preserve the
+zone, while **Modify / Redraw / Delete** remain explicit geometry actions. A correction note can
+be saved with the verdict so GRUMP's journal remembers why the estimator changed the map.
+
 **⟂ Transitions** derives the line where two finishes meet, from rooms you already measured.
 Finishes changing inside one open space commit as a dashed butt-joint run you accept; rooms
 parallel across a wall are **reported and never counted**, because that transition is a

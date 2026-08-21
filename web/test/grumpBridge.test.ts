@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { bridgeParent, createGrumpBridge, shapeFacts } from "../src/lib/grumpBridge.js";
+import { bridgeParent, createGrumpBridge, regionFacts, shapeFacts } from "../src/lib/grumpBridge.js";
 
 test("bridgeParent enables only an explicitly embedded loopback canvas", () => {
   assert.equal(
@@ -31,6 +31,23 @@ test("shapeFacts reports review, undo, edits, deletes and restores for machine s
   assert.deepEqual(shapeFacts([accepted], [edited], { type: "geom", id: "s1" }), [
     { type: "shape.edited", payload: { shapes: [edited] } },
   ]);
+});
+
+test("regionFacts journals create, review, edit, delete and undo without owning map state", () => {
+  const proposed = { id: "region:1", name: "Room 161", review: { status: "proposed" }, revision: 1 };
+  const confirmed = { ...proposed, review: { status: "confirmed", note: "Wall checked." }, revision: 2 };
+  const renamed = { ...confirmed, name: "Patient Room 161", revision: 3 };
+  assert.equal(regionFacts([], [proposed], { type: "replace", region: proposed })[0].type, "region.created");
+  assert.deepEqual(regionFacts([proposed], [confirmed], { type: "replace", region: confirmed }), [{
+    type: "region.reviewed",
+    payload: {
+      region_id: "region:1", decision: "confirmed", previous_status: "proposed",
+      note: "Wall checked.", reason_code: null, region: confirmed,
+    },
+  }]);
+  assert.equal(regionFacts([confirmed], [renamed], { type: "replace", region: renamed })[0].type, "region.edited");
+  assert.equal(regionFacts([renamed], [], { type: "delete", id: "region:1" })[0].type, "region.deleted");
+  assert.equal(regionFacts([], [renamed], { type: "replace", region: renamed, audit: "restore" })[0].type, "region.restored");
 });
 
 test("bridge applies a proposal once and emits a correlated Canvas fact", async () => {

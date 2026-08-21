@@ -25,8 +25,9 @@ import { extractSvgPrimitives, svgToStamp } from "../lib/svgImport.js";
 import { transformPath, svgPlacedBox } from "../lib/svgpath.js";
 import { ingestFiles } from "../lib/ingest.js";
 import { parseTakeoffImport, mergeTakeoffImport } from "../lib/importTakeoff.js";
-import { bridgeParent, createGrumpBridge, shapeFacts } from "../lib/grumpBridge.js";
+import { bridgeParent, createGrumpBridge, regionFacts, shapeFacts } from "../lib/grumpBridge.js";
 import ToolMenu from "../components/ToolMenu.jsx";
+import ProjectMapPanel from "../components/ProjectMapPanel.jsx";
 import PlanNavigator from "../components/PlanNavigator.jsx";
 import ReportPanel from "../components/ReportPanel.jsx";
 import RevisionsPanel from "../components/RevisionsPanel.jsx";
@@ -59,7 +60,7 @@ import { detectCandidateRule, buildRuleFromSeed, applyRuleToProject } from "../l
 import { deriveTransitionRuns, transitionRefusal } from "../lib/transitions";
 import { conditionTotals, verticalWallSf } from "../lib/totals.js";
 import { shapesInZone } from "../lib/zone.js";
-import { applyRegionCommand, mintRegionId, sanitizeRegions } from "../lib/regions";
+import { applyRegionCommand, mintRegionId, reviewRegion, sanitizeRegions } from "../lib/regions";
 import { resolveRegionScale } from "../lib/regionScale";
 import { sanitizeSheetLevels } from "../lib/sheetLevels.js";
 import { sanitizeConditionColumns, sanitizeConditionAttrs, renameColumnValue, columnLabel } from "../lib/conditionColumns.js";
@@ -507,8 +508,11 @@ export default function TakeoffCanvas() {
     }
     return res;
   }
-  function dispatchRegion(cmd, { record = true, reprice = false } = {}) {
-    const res = applyRegionCommand(regions, cmd);
+  function dispatchRegion(cmd, { record = true, reprice = false, publishFacts = true } = {}) {
+    const sourceRegions = Array.isArray(grumpTakeoffPayloadRef.current?.regions)
+      ? grumpTakeoffPayloadRef.current.regions
+      : regions;
+    const res = applyRegionCommand(sourceRegions, cmd);
     if (!res.changed) return res;
     const sourceShapes = Array.isArray(grumpTakeoffPayloadRef.current?.shapes)
       ? grumpTakeoffPayloadRef.current.shapes
@@ -517,7 +521,7 @@ export default function TakeoffCanvas() {
     if (reprice) {
       const affected = new Set([
         ...(cmd.type === "replace" ? [cmd.region?.sheet_id] : []),
-        ...regions.filter((region) => region.id === cmd.id).map((region) => region.sheet_id),
+        ...sourceRegions.filter((region) => region.id === cmd.id).map((region) => region.sheet_id),
       ].filter(Boolean));
       const errors = [];
       nextShapes = sourceShapes.map((shape) => {
@@ -542,6 +546,9 @@ export default function TakeoffCanvas() {
       const st = recordCommand(undoStackRef.current, { family: "region", cmd, inverse: res.inverse, shapesBefore: sourceShapes, shapesAfter: nextShapes });
       undoStackRef.current = st.undo;
       redoStackRef.current = st.redo;
+    }
+    for (const fact of publishFacts ? regionFacts(sourceRegions, res.regions, cmd) : []) {
+      grumpBridgeRef.current?.publish(fact.type, fact.payload, "human");
     }
     return res;
   }
@@ -674,6 +681,9 @@ export default function TakeoffCanvas() {
       if (entry.shapesBefore) setShapes(entry.shapesBefore);
       if (grumpTakeoffPayloadRef.current) grumpTakeoffPayloadRef.current = { ...grumpTakeoffPayloadRef.current, regions: res.regions, ...(entry.shapesBefore ? { shapes: entry.shapesBefore } : {}) };
       redoStackRef.current = [...redoStackRef.current, entry];
+      for (const fact of regionFacts(regions, res.regions, { ...entry.inverse, audit: "restore" })) {
+        grumpBridgeRef.current?.publish(fact.type, fact.payload, "human");
+      }
       setSelectedRegionId(null);
       setRegionEditor(null);
       return;
@@ -702,6 +712,9 @@ export default function TakeoffCanvas() {
       if (entry.shapesAfter) setShapes(entry.shapesAfter);
       if (grumpTakeoffPayloadRef.current) grumpTakeoffPayloadRef.current = { ...grumpTakeoffPayloadRef.current, regions: res.regions, ...(entry.shapesAfter ? { shapes: entry.shapesAfter } : {}) };
       undoStackRef.current = [...undoStackRef.current, entry];
+      for (const fact of regionFacts(regions, res.regions, entry.cmd)) {
+        grumpBridgeRef.current?.publish(fact.type, fact.payload, "human");
+      }
       setSelectedRegionId(null);
       setRegionEditor(null);
       return;
@@ -5006,12 +5019,20 @@ export default function TakeoffCanvas() {
     if (tool === "surface") commitSurface(poly); else if (tool === "linear") commitLinear(poly); else if (tool === "curve") commitLinear(poly, true); else commitPoly(poly, tool === "deduct"); setPoly([]);
   }
 
-  function openMapRegion(region) {
+  function focusMapRegion(region) {
     if (!region) return;
     setTool("map-region");
+    if (!panelKeySet.has(region.sheet_id)) goToSheet(region.sheet_id);
     setPoly([]);
     setRegionRedrawId(null);
     setSelectedRegionId(region.id);
+    setRegionEditor(null);
+    selectShape(null);
+  }
+
+  function openMapRegion(region) {
+    if (!region) return;
+    focusMapRegion(region);
     setRegionEditor({
       id: region.id,
       sheet_id: region.sheet_id,
@@ -5023,7 +5044,32 @@ export default function TakeoffCanvas() {
       scale_label: region.scale_profile?.label || "",
       existing: true,
     });
-    selectShape(null);
+  }
+
+  function reviewMapRegion(id, status, note = "", reasonCode = "human_review") {
+    const sourceRegions = Array.isArray(grumpTakeoffPayloadRef.current?.regions)
+      ? grumpTakeoffPayloadRef.current.regions
+      : regions;
+    const current = sourceRegions.find((region) => region.id === id);
+    if (!current) return;
+    const next = reviewRegion(current, status, {
+      reviewed_by: "human",
+      reviewed_at: new Date().toISOString(),
+      reason_code: reasonCode,
+      note,
+    });
+    if (!next) {
+      setCommitMsg("This Project Map decision could not be saved.");
+      return;
+    }
+    const result = dispatchRegion({ type: "replace", region: next });
+    if (!result.changed) {
+      setCommitMsg("This Project Map decision did not change the saved card.");
+      return;
+    }
+    setSelectedRegionId(id);
+    const verb = status === "confirmed" ? "Accepted" : status === "rejected" ? "Rejected" : "Flagged for review";
+    setCommitMsg(`${verb} map zone “${next.name}”. The geometry remains in the Project Map and the decision is journaled.`);
   }
 
   function saveMapRegion() {
@@ -7996,7 +8042,11 @@ export default function TakeoffCanvas() {
                     {tool === "map-region" && regions.filter((region) => region.sheet_id === p.key).map((region) => {
                       const selected = region.id === selectedRegionId;
                       const isScaleZone = region.purposes?.includes("scale") || Boolean(region.scale_profile);
-                      const zoneInk = isScaleZone ? "#b8860b" : "#3d8f72";
+                      const reviewStatus = region.review?.status || "needs_review";
+                      const zoneInk = reviewStatus === "rejected" ? "#b03a26"
+                        : reviewStatus === "proposed" ? "#1f3fc7"
+                        : reviewStatus === "needs_review" ? "#b8860b"
+                        : isScaleZone ? "#9a7007" : "#3d8f72";
                       const points = region.geometry.verts_norm.map(([nx, ny]) => `${nx * p.img.w},${ny * p.img.h}`).join(" ");
                       const center = region.geometry.verts_norm.reduce(
                         (sum, [nx, ny]) => [sum[0] + nx * p.img.w, sum[1] + ny * p.img.h],
@@ -8008,20 +8058,20 @@ export default function TakeoffCanvas() {
                   data-testid="map-region-outline"
                   data-region-id={region.id}
                   points={points}
-                            fill={selected ? (isScaleZone ? "rgba(184,134,11,.16)" : "rgba(32,137,92,.15)") : (isScaleZone ? "rgba(184,134,11,.07)" : "rgba(32,137,92,.06)")}
-                            stroke={selected ? (isScaleZone ? "#b8860b" : "#20895c") : zoneInk}
+                            fill={selected ? `${zoneInk}24` : `${zoneInk}10`}
+                            stroke={zoneInk}
                             strokeWidth={(selected ? 3.5 : 2) / tf.scale}
                             strokeDasharray={selected ? undefined : `${7 / tf.scale} ${5 / tf.scale}`}
                             style={{ cursor: "pointer", pointerEvents: "all" }}
                             onPointerDown={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
-                              openMapRegion(region);
+                              focusMapRegion(region);
                             }}
                           />
                           <g style={{ pointerEvents: "none" }}>
                             <rect x={center[0] - 70 / tf.scale} y={center[1] - 10 / tf.scale} width={140 / tf.scale} height={20 / tf.scale} fill="var(--paper-bright)" fillOpacity={0.92} stroke={zoneInk} strokeWidth={1 / tf.scale} />
-                            <text x={center[0]} y={center[1]} textAnchor="middle" dominantBaseline="central" fill={isScaleZone ? "#795800" : "#174f3c"} fontSize={11 / tf.scale} fontWeight="700">{region.name}{region.scale_profile?.label ? ` · ${region.scale_profile.label}` : ""}</text>
+                            <text x={center[0]} y={center[1]} textAnchor="middle" dominantBaseline="central" fill={zoneInk} fontSize={11 / tf.scale} fontWeight="700">{region.name}{region.scale_profile?.label ? ` · ${region.scale_profile.label}` : ""}</text>
                           </g>
                         </g>
                       );
@@ -8359,93 +8409,30 @@ export default function TakeoffCanvas() {
         </div>
         )}
 
-        {(regionEditor || regionRedrawId) && tool === "map-region" && (
-          <div
-            data-testid="map-region-editor"
-            onPointerDown={(event) => event.stopPropagation()}
-            style={{ position: "absolute", left: 14, top: 14, width: 290, padding: 14, background: "var(--paper-bright)", border: "1px solid #20895c", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi + 2, color: "var(--ink)" }}>
-            {regionRedrawId && !regionEditor ? (
-              <>
-                <div style={{ fontWeight: 700, fontSize: 13 }}>Redrawing map zone</div>
-                <div style={{ marginTop: 6, color: "var(--ink-muted)", fontSize: 11.5 }}>Trace at least three points, then Finish. The saved contour stays intact until you confirm the replacement.</div>
-                <button type="button" onClick={() => { setRegionRedrawId(null); setPoly([]); setSelectedRegionId(null); }} style={{ marginTop: 10, padding: "5px 9px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer" }}>Cancel redraw</button>
-              </>
-            ) : regionEditor ? (
-              <>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <b style={{ fontSize: 13 }}>{regionEditor.existing ? "Edit map zone" : "Name new map zone"}</b>
-                  <span style={{ marginLeft: "auto", fontFamily: "var(--f-mono)", fontSize: 9.5, color: "var(--ink-muted)" }}>{tabLabel(regionEditor.sheet_id)}</span>
-                </div>
-                <label style={{ display: "block", marginTop: 10, fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>Name</label>
-                <input
-                  data-testid="map-region-name"
-                  autoFocus
-                  value={regionEditor.name}
-                  placeholder="Example: Section A, Patient Room 161"
-                  onChange={(event) => setRegionEditor((current) => ({ ...current, name: event.target.value }))}
-                  style={{ width: "100%", boxSizing: "border-box", marginTop: 4, padding: "7px 8px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 12.5 }}
-                />
-                <label style={{ display: "block", marginTop: 9, fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>Type</label>
-                <select data-testid="map-region-kind" value={regionEditor.kind} onChange={(event) => setRegionEditor((current) => ({ ...current, kind: event.target.value }))} style={{ width: "100%", marginTop: 4, padding: "6px 8px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 12 }}>
-                  <option value="area">Area</option>
-                  <option value="plan">Plan</option>
-                  <option value="room">Room</option>
-                  <option value="section">Section</option>
-                  <option value="elevation">Elevation</option>
-                  <option value="detail">Detail</option>
-                </select>
-                <label style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 11, fontSize: 11.5, color: "var(--ink)" }}>
-                  <input
-                    data-testid="map-region-scale-enabled"
-                    type="checkbox"
-                    checked={Boolean(regionEditor.scale_enabled)}
-                    onChange={(event) => {
-                      const enabled = event.target.checked;
-                      const sheetUpp = scales[regionEditor.sheet_id];
-                      const detected = detectedScales[regionEditor.sheet_id];
-                      const fallbackUpp = sheetUpp || detected?.upp || "";
-                      const fallbackLabel = STANDARD_SCALES.find((item) => Math.abs(item.upp - fallbackUpp) < 1e-9)?.label || detected?.label || "";
-                      setRegionEditor((current) => ({
-                        ...current,
-                        scale_enabled: enabled,
-                        ...(enabled && !current.scale_upp ? { scale_upp: fallbackUpp, scale_label: fallbackLabel } : {}),
-                      }));
-                    }}
-                  />
-                  Use a different scale inside this zone
-                </label>
-                {regionEditor.scale_enabled && (
-                  <>
-                    <label style={{ display: "block", marginTop: 8, fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>Zone scale</label>
-                    <select
-                      data-testid="map-region-scale"
-                      value={STANDARD_SCALES.some((item) => Math.abs(item.upp - Number(regionEditor.scale_upp)) < 1e-9) ? String(regionEditor.scale_upp) : (regionEditor.scale_upp ? "__custom" : "")}
-                      onChange={(event) => {
-                        const picked = STANDARD_SCALES.find((item) => String(item.upp) === event.target.value);
-                        if (picked) setRegionEditor((current) => ({ ...current, scale_upp: picked.upp, scale_label: picked.label }));
-                      }}
-                      style={{ width: "100%", marginTop: 4, padding: "6px 8px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 12 }}>
-                      <option value="" disabled>Choose a scale</option>
-                      {regionEditor.scale_upp && !STANDARD_SCALES.some((item) => Math.abs(item.upp - Number(regionEditor.scale_upp)) < 1e-9) && (
-                        <option value="__custom">{regionEditor.scale_label || "Custom calibrated scale"}</option>
-                      )}
-                      {STANDARD_SCALES.map((item) => <option key={item.label} value={String(item.upp)}>{item.label}</option>)}
-                    </select>
-                    <div style={{ marginTop: 5, fontSize: 10.5, color: "var(--ink-muted)" }}>Human-confirmed when saved. Measurements crossing its outline will be refused.</div>
-                  </>
-                )}
-                <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
-                  <button data-testid="map-region-save" type="button" disabled={!String(regionEditor.name || "").trim() || (regionEditor.scale_enabled && !(Number(regionEditor.scale_upp) > 0))} onClick={saveMapRegion} style={{ padding: "6px 10px", border: "1px solid #20895c", background: "#20895c", color: "white", cursor: String(regionEditor.name || "").trim() && (!regionEditor.scale_enabled || Number(regionEditor.scale_upp) > 0) ? "pointer" : "not-allowed", opacity: String(regionEditor.name || "").trim() && (!regionEditor.scale_enabled || Number(regionEditor.scale_upp) > 0) ? 1 : 0.45, fontWeight: 700 }}>Save</button>
-                  {regionEditor.existing && <button data-testid="map-region-redraw" type="button" onClick={() => redrawMapRegion(regionEditor.id)} style={{ padding: "6px 9px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer" }}>Redraw</button>}
-                  {regionEditor.existing && <button data-testid="map-region-delete" type="button" onClick={() => deleteMapRegion(regionEditor.id)} style={{ padding: "6px 9px", border: "1px solid var(--c-danger)", background: "transparent", color: "var(--c-danger)", cursor: "pointer" }}>Delete</button>}
-                  <button type="button" onClick={() => { setRegionEditor(null); setSelectedRegionId(null); setRegionRedrawId(null); setPoly([]); }} style={{ padding: "6px 9px", border: "none", background: "transparent", color: "var(--ink-muted)", cursor: "pointer" }}>Cancel</button>
-                </div>
-                <div style={{ marginTop: 8, fontSize: 10.5, color: "var(--ink-muted)" }}>Saved as human-confirmed project structure · Ctrl+Z restores edits and deletions.</div>
-              </>
-            ) : null}
-          </div>
+        {tool === "map-region" && (
+          <ProjectMapPanel
+            regions={regions}
+            visibleSheetIds={[...panelKeySet]}
+            selectedRegionId={selectedRegionId}
+            editor={regionEditor}
+            redrawId={regionRedrawId}
+            scales={scales}
+            detectedScales={detectedScales}
+            standardScales={STANDARD_SCALES}
+            sheetLabel={tabLabel}
+            onClose={() => { setTool("select"); setPoly([]); setSelectedRegionId(null); setRegionEditor(null); setRegionRedrawId(null); }}
+            onSelect={focusMapRegion}
+            onStartNew={() => { setPoly([]); setSelectedRegionId(null); setRegionEditor(null); setRegionRedrawId(null); setCommitMsg("Trace the new Project Map zone, then Finish."); }}
+            onEditorChange={setRegionEditor}
+            onSave={saveMapRegion}
+            onEdit={openMapRegion}
+            onRedraw={redrawMapRegion}
+            onDelete={deleteMapRegion}
+            onCancelEdit={() => { setRegionEditor(null); setSelectedRegionId(null); setRegionRedrawId(null); setPoly([]); }}
+            onCancelRedraw={() => { setRegionRedrawId(null); setPoly([]); setSelectedRegionId(null); }}
+            onReview={reviewMapRegion}
+          />
         )}
-
         {/* live readout — top-right, at right:56 so it clears the panel rail's
             column entirely (right:14, 34px wide — same clearance the zone panel
             uses) instead of the old magic maxHeight tuned to the rail's height. */}

@@ -94,6 +94,18 @@ test("an unconfirmed or anisotropic most-specific zone blocks its parent and she
   assert.equal(resolveRegionScale({ ...args, regions: [parent, anisotropic] }).status, "unsupported");
 });
 
+test("a rejected Project Map verdict suspends an otherwise confirmed scale profile", () => {
+  const rejected = zone("rejected", square(.2, .2, .8, .8), .01, {
+    review: { status: "rejected", fields: { scale_profile: "rejected" } },
+  });
+  const result = resolveRegionScale({
+    sheet_id: "A101", regions: [rejected], sheet_units_per_px: .02,
+    geometry: { kind: "point", verts_norm: [[.5, .5]] },
+  });
+  assert.equal(result.status, "unconfirmed");
+  assert.match(result.message, /not human-confirmed/);
+});
+
 test("a sheet with neither a containing zone nor a sheet scale is explicitly missing", () => {
   const result = resolveRegionScale({
     sheet_id: "A101", regions: [], sheet_units_per_px: null,

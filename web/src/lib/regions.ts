@@ -100,6 +100,13 @@ export interface RegionCommandResult {
   changed: boolean;
 }
 
+export interface RegionReviewOptions {
+  reviewed_by?: string;
+  reviewed_at?: string;
+  reason_code?: string;
+  note?: string;
+}
+
 const PURPOSES = new Set<string>(REGION_PURPOSES);
 const STATUSES = new Set<string>(REGION_REVIEW_STATUSES);
 const MAX_TEXT = 2048;
@@ -365,6 +372,46 @@ export function mintRegionId(): string {
   const uid = globalThis.crypto?.randomUUID?.()
     || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return `${REGION_PREFIX}${uid}`;
+}
+
+/** Build one immutable human-review transition. Rejection is deliberately a
+ * status change, not deletion: the mapped geometry remains available for
+ * correction, comparison and audit until a separate delete command removes it.
+ */
+export function reviewRegion(
+  value: PlanRegion,
+  status: RegionReviewStatus,
+  options: RegionReviewOptions = {},
+): PlanRegion | null {
+  const [region] = sanitizeRegions([value]);
+  if (!region || !STATUSES.has(status)) return null;
+  const now = text(options.reviewed_at) || new Date().toISOString();
+  const reviewer = text(options.reviewed_by) || "human";
+  const reasonCode = text(options.reason_code);
+  const note = text(options.note, MAX_TEXT);
+  const fields = { ...(region.review.fields || {}) };
+  const reviewable = ["name", "kind", "geometry", "purposes"];
+  for (const key of ["scale_profile", "analysis_profile", "evidence", "links", "assessments"] as const) {
+    if (region[key] != null) reviewable.push(key);
+  }
+  // A whole-card verdict resolves every populated field. `needs_review` keeps
+  // each field visibly open; rejection records what the human rejected.
+  for (const key of reviewable) fields[key] = status;
+  const next: PlanRegion = {
+    ...region,
+    revision: region.revision + 1,
+    review: {
+      ...region.review,
+      status,
+      fields,
+      reviewed_by: reviewer,
+      reviewed_at: now,
+      ...(reasonCode ? { reason_code: reasonCode } : {}),
+      ...(note ? { note } : {}),
+    },
+  };
+  const [sanitized] = sanitizeRegions([next]);
+  return sanitized || null;
 }
 
 /** Pure mutation gate for the manual Project Map editor. `replace` covers both

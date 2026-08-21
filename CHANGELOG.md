@@ -5,6 +5,13 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 ## Unreleased — GRUMP loopback bridge
 
 ### Added
+- **Project Map is now a review desk, not only a drawing mode.** A separate panel lists the
+  visible sheets or the whole project's zones and opens durable cards for semantic purpose,
+  scale/analysis profiles, field review, evidence, links, hierarchy and confidence. Human
+  Accept / Needs review / Reject verdicts preserve the geometry; Modify, Redraw and Delete stay
+  explicit. Correction explanations persist with the card, and the GRUMP bridge journals
+  create/review/edit/delete/restore facts. A rejected scale viewport blocks measurement until
+  reconfirmed instead of silently lending authority to a rejected calibration.
 - **Confirmed Project Map zones can now carry their own scale.** The Map editor assigns a standard scale to a named zone; that scale applies only inside its polygon, persists with the project, and is shared by manual tools, One-Click, agent proposals, MCP measurements, edits, dimensions, cutouts, transitions, reports, and roll-goods layouts. A nested child overrides its parent. A measurement crossing a scale-zone boundary, an unconfirmed zone, an anisotropic X/Y profile, or conflicting overlaps refuses before mutation instead of falling back silently. Outside every scale zone, the sheet scale remains the fallback. Sheet-wide `detect_rooms` and propagated-rule sweeps explicitly withhold multi-scale sheets in this milestone rather than calculate them at one wrong scale.
 - **A saved Project Map now starts with human-drawn semantic zones.** The new **Map** aid traces a polygon without requiring scale, then names and classifies it as an area, plan, room, section, elevation, or detail. Saved outlines are sheet-scoped, selectable only while Map is active, editable, redrawable, deletable, autosaved, restored on reload, and covered by the shared undo/redo history. The existing **Zone check** remains a separate temporary quantity query.
 - **The Canvas payload has an additive persistent project-map region contract.** `regions` carries normalized named polygons, review state, optional scale/analysis profiles, evidence and links without changing the `opentakeoff.takeoff_canvas.v1` schema identity. Old saves load with no regions; operator regions win same-id merges; `import_takeoff`/`export_takeoff` round-trip the same sanitized records for GRUMP. This is the data foundation only—the region authoring UI is deliberately a later milestone.
