@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { countFootprintDimensions, countFootprintFromVerts, countVertsAt, normalizeCountFootprint, rectangularCountFootprint } from "../src/lib/countFootprint.js";
+import { countFootprintDimensions, countFootprintFromVerts, countVertsAt, normalizeCountFootprint, rectangularCountFootprint, resizeCountVertsByFootprint } from "../src/lib/countFootprint.js";
 
 test("a default count footprint is a calibrated 1 ft × 1 ft square", () => {
   const image = { w: 1000, h: 800 };
@@ -40,4 +40,22 @@ test("zero height creates a calibrated line count footprint", () => {
 test("rectangular count dimensions clamp safely to the 1/8-inch editor floor", () => {
   const footprint = rectangularCountFootprint(0, 0.01);
   assert.deepEqual(countFootprintDimensions(footprint), { width_in: 12, height_in: 0.125 });
+});
+
+test("an existing Count symbol follows later Product X/Y changes around its centre", () => {
+  const oldFootprint = rectangularCountFootprint(12, 12);
+  const newFootprint = rectangularCountFootprint(36, 6);
+  const oldVerts = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]];
+  assert.deepEqual(resizeCountVertsByFootprint(oldVerts, oldFootprint, newFootprint), [
+    [0.2, 0.45], [0.8, 0.45], [0.8, 0.55], [0.2, 0.55],
+  ]);
+});
+
+test("setting Count Y to zero collapses existing symbols into centred lines", () => {
+  const oldFootprint = rectangularCountFootprint(12, 12);
+  const lineFootprint = rectangularCountFootprint(36, 0);
+  const oldVerts = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]];
+  assert.deepEqual(resizeCountVertsByFootprint(oldVerts, oldFootprint, lineFootprint), [
+    [0.2, 0.5], [0.8, 0.5], [0.8, 0.5], [0.2, 0.5],
+  ]);
 });

@@ -44,6 +44,7 @@ import { ROLL_GOODS_UI_ENABLED } from "../lib/canvasConstants.js";
 import { countFootprintDimensions, rectangularCountFootprint } from "../lib/countFootprint.js";
 import { openingDimensions } from "../lib/openings.js";
 import { clampFillOpacity, clampLineWidthPx } from "../lib/conditionAppearance.js";
+import { PRODUCT_TYPES, groupConditionItemsByProductType } from "../lib/productTypes.js";
 
 export const PANEL_MIN_W = 240;
 export const PANEL_MAX_W = 560;
@@ -54,30 +55,6 @@ export const clampPanelW = (w) => Math.min(PANEL_MAX_W, Math.max(PANEL_MIN_W, w)
 // TARGET. Custom MIME so a condition drag never looks like a file drop.
 export const CONDITION_DND_MIME = "application/x-opentakeoff-condition";
 
-// tag family = the text before the dash (CPT-1 → CPT) — the grouping key for
-// the panel's grouped view. VIEW-ONLY, like sort and search: the conditions
-// array order is canonical (1–9 hotkeys are positional and the payload
-// serializes it), so nothing here ever reorders the array itself.
-// A condition minted as a TWIN carries an explicit family_id, which beats guessing from the
-// tag: "SV-1 – Level 2" and "SV-1" are one family by construction, and the group is named for
-// the base tag they share (lib/variants.ts). Everything else still groups by its tag prefix.
-const tagFamily = (c) => {
-  const t = typeof c === "string" ? c : c?.finish_tag;
-  if (typeof c === "object" && c?.family_id) return baseTagOf(t).toUpperCase() || "—";
-  return String(t || "").split("-")[0].trim().toUpperCase() || "—";
-};
-const PRODUCT_TYPES = [
-  ["", "Type non défini"],
-  ["brick", "Brique"],
-  ["stone", "Pierre"],
-  ["architectural_block", "Bloc architectural"],
-  ["concrete_block", "Bloc de béton"],
-  ["sill", "Allège"],
-  ["angle_iron", "Fer angle"],
-  ["cladding", "Revêtement"],
-  ["opening", "Ouverture"],
-  ["other", "Autre"],
-];
 // one module-level collator — localeCompare builds a fresh collator per CALL
 // (~56× slower, benchmarked), and natCompare runs n·log n per sorted view
 const coll = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
@@ -88,6 +65,39 @@ const natCompare = (a, b) => coll.compare(String(a), String(b));
 const ip = { padding: "3px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 };
 const btnAddFull = { width: "100%", padding: "6px 10px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12 };
 const btnClearX = { border: "none", background: "none", color: "var(--ink-muted)", cursor: "pointer", fontSize: 13, padding: 0 };
+
+function ProductOrderControl({ position, total, hotkey, pinned, onMove }) {
+  const [draft, setDraft] = useState(String(position));
+  useEffect(() => setDraft(String(position)), [position]);
+  const maxPosition = Math.max(1, Math.min(99, total));
+  const commit = () => {
+    const parsed = Number.parseInt(draft, 10);
+    if (!Number.isFinite(parsed)) { setDraft(String(position)); return; }
+    onMove(Math.max(1, Math.min(maxPosition, parsed)));
+  };
+  const stop = (event) => event.stopPropagation();
+  const arrow = (disabled) => ({
+    width: 22, height: 13, padding: 0, border: "none", background: "transparent",
+    color: disabled ? "var(--ink-faint)" : "var(--cobalt)", cursor: disabled ? "default" : "pointer",
+    fontSize: 9, lineHeight: 1,
+  });
+  return <div draggable={false} onClick={stop} onPointerDown={stop} onDoubleClick={stop}
+    onDragStart={(event) => { event.preventDefault(); event.stopPropagation(); }}
+    title={hotkey ? `Position ${position} · raccourci ${hotkey}${pinned ? " épinglé" : ""}` : `Position ${position}`}
+    style={{ width: 24, flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1 }}>
+    <button type="button" aria-label="Monter ce Produit" disabled={position <= 1} onClick={() => onMove(position - 1)} style={arrow(position <= 1)}>▲</button>
+    <input type="text" inputMode="numeric" value={draft} aria-label="Position du Produit" title="Écrire une position de 1 à 99, puis Enter"
+      onFocus={(event) => event.currentTarget.select()}
+      onChange={(event) => setDraft(event.target.value.replace(/[^0-9]/g, "").slice(0, 2))}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") { event.preventDefault(); commit(); event.currentTarget.blur(); }
+        else if (event.key === "Escape") { event.preventDefault(); setDraft(String(position)); event.currentTarget.blur(); }
+      }}
+      onBlur={() => setDraft(String(position))}
+      style={{ width: 22, height: 18, boxSizing: "border-box", padding: 0, textAlign: "center", border: `1px solid ${hotkey ? "var(--cobalt)" : "var(--ink-faint)"}`, borderRadius: 3, background: "var(--paper-bright)", color: hotkey ? "var(--cobalt)" : "var(--ink)", fontFamily: "var(--f-mono,monospace)", fontSize: 9 }} />
+    <button type="button" aria-label="Descendre ce Produit" disabled={position >= total} onClick={() => onMove(position + 1)} style={arrow(position >= total)}>▼</button>
+  </div>;
+}
 
 // Per-material-kind coverage presets (adhesive trowel notches, mortar trowels)
 // and the grout-from-tile-geometry calculator live in lib/coverage.js —
@@ -761,7 +771,7 @@ function TakeoffsPanel({
   onUpdateLibMaterial, onPushLibUpdate, onDeleteLibMaterial, onAddLibMaterial,
   onAddColumn, onRenameColumn, onDeleteColumn, onAddColumnValue, onRemoveColumnValue, onRenameColumnValue,
   onAddLabel, onRenameLabel, onRemoveLabel,
-  onToggleCollapse, onHoldGesture, onTogglePin,
+  onToggleCollapse, onHoldGesture, onTogglePin, onReorderCondition,
 }) {
   const [panelTab, setPanelTab] = useState("takeoffs");       // takeoffs | library | openings | materials | columns
   const [condQuery, setCondQuery] = useState("");             // live filter over the condition list (transient, never persisted)
@@ -827,13 +837,7 @@ function TakeoffsPanel({
   }, [conditions, condQ, matchesQuery, activeCond, panelPrefs.az]);
   const condGroups = useMemo(() => {
     if (!panelPrefs.group) return [{ name: null, items: condView }];
-    const by = new Map();
-    for (const it of condView) {
-      const fam = tagFamily(it.c);
-      if (!by.has(fam)) by.set(fam, []);
-      by.get(fam).push(it);
-    }
-    return [...by.entries()].sort((a, b) => natCompare(a[0], b[0])).map(([name, items]) => ({ name, items }));
+    return groupConditionItemsByProductType(condView);
   }, [condView, panelPrefs.group]);
   // "no match" keys on the QUERY missing, not on an empty view — the forced-in
   // active row would otherwise hide the message forever (includes("") is true)
@@ -937,6 +941,13 @@ function TakeoffsPanel({
     // when nothing is pinned so the badge never under-advertises a working key
     const hIdx = palette.length ? pinIdx : conditions.findIndex((x) => x.id === c.id);
     const hot = hIdx >= 0 && hIdx < 9;
+    const orderPosition = conditions.findIndex((x) => x.id === c.id) + 1;
+    const moveProduct = (position) => {
+      // A-Z/grouping are alternate views that would conceal the canonical
+      // splice. Return to the manual list when the user explicitly reorders.
+      if (panelPrefs.az || panelPrefs.group) onPanelPrefs((prefs) => ({ ...prefs, az: false, group: false }));
+      onReorderCondition(c.id, position);
+    };
     return (
       <div key={c.id} data-cond-id={c.id} style={{ borderTop: "1px solid var(--ink-faint)", background: checked ? "var(--tint-select)" : on ? "var(--tint-active)" : "transparent", borderLeft: on ? `3px solid ${c.color}` : checked ? "3px solid var(--cobalt)" : "3px solid transparent" }}>
         <div draggable
@@ -949,7 +960,8 @@ function TakeoffsPanel({
           onDoubleClick={() => onLocate(c.id)}
           title={reassigning ? "Reassign selected shape to this takeoff item" : "Make this the active takeoff item (double-click zooms to its takeoffs · ⌘-click / ⇧-click selects for bulk edit · drag to the top-bar palette for one-click access)"}
           style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", cursor: "pointer", outline: reassigning ? "1px dashed var(--cobalt)" : "none", outlineOffset: -3, userSelect: "none" }}>
-          {hot && <span title={pinned ? `Palette shortcut — press ${hIdx + 1} to activate` : `Press ${hIdx + 1} to activate (pin to lock this number)`} style={{ fontSize: 9, fontFamily: "var(--f-mono,monospace)", color: pinned ? "var(--cobalt)" : "var(--ink-muted)", border: `1px solid ${pinned ? "var(--cobalt)" : "var(--ink-faint)"}`, borderRadius: 3, padding: "0 3px", flexShrink: 0 }}>{hIdx + 1}</span>}
+          {on ? <ProductOrderControl position={orderPosition} total={conditions.length} hotkey={hot ? hIdx + 1 : null} pinned={pinned} onMove={moveProduct} />
+            : <span title={`Position ${orderPosition}${hot ? ` · raccourci ${hIdx + 1}${pinned ? " épinglé" : ""}` : ""}`} style={{ minWidth: 18, textAlign: "center", fontSize: 9, fontFamily: "var(--f-mono,monospace)", color: hot ? "var(--cobalt)" : "var(--ink-muted)", border: `1px solid ${hot ? "var(--cobalt)" : "var(--ink-faint)"}`, borderRadius: 3, padding: "0 3px", flexShrink: 0 }}>{orderPosition}</span>}
           <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, flexShrink: 0 }}><HatchSwatch type={c.hatch || "solid"} line={c.color} fill={c.fill} /></span>
           <div style={{ minWidth: 0, flex: 1 }}>
             <div style={{ fontWeight: on ? 700 : 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -973,6 +985,13 @@ function TakeoffsPanel({
           <span style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, color: "var(--ink-muted)", flexShrink: 0 }}>{shapeCount}▦</span>
           <button onClick={(e) => { e.stopPropagation(); onLocate(c.id); }} title="Cadrer les mesures de ce Produit"
             style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12, lineHeight: 1 }}>⌖</button>
+          <button onClick={(e) => {
+            e.stopPropagation();
+            onSetActive(c.id);
+            setPanelMatOpen(true);
+            setTwinDraft({ id: c.id, label: "" });
+          }} title="Dupliquer ce Produit pour une autre zone — le champ de nom s’ouvre sous sa fiche"
+            style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: twinDraft.id === c.id ? "var(--ink)" : "transparent", color: twinDraft.id === c.id ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 12, lineHeight: 1 }}>⎘</button>
           <button onClick={(e) => { e.stopPropagation(); onSetActive(c.id); setPanelMatOpen((v) => (on ? !v : true)); }}
             title="Matériaux associés à ce Produit"
             style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: matOn ? "var(--ink)" : "transparent", color: matOn ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 11 }}>
@@ -1107,8 +1126,8 @@ function TakeoffsPanel({
             title="Natural sort by tag (CT-2 before CT-10) — a view; hotkeys 1–9 keep their original numbering"
             style={{ padding: "3px 7px", borderRadius: 0, border: `1px solid ${panelPrefs.az ? "var(--cobalt)" : "var(--ink-faint)"}`, background: panelPrefs.az ? "var(--cobalt)" : "transparent", color: panelPrefs.az ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>A→Z</button>
           <button onClick={() => onPanelPrefs((p) => ({ ...p, group: !p.group }))}
-            title="Group by tag family (the text before the dash: CPT, LVT, CT…)"
-            style={{ padding: "3px 7px", borderRadius: 0, border: `1px solid ${panelPrefs.group ? "var(--cobalt)" : "var(--ink-faint)"}`, background: panelPrefs.group ? "var(--cobalt)" : "transparent", color: panelPrefs.group ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>≡ grp</button>
+            title="Classer les Produits par catégorie (Brique, Pierre, Allège…)"
+            style={{ padding: "3px 7px", borderRadius: 0, border: `1px solid ${panelPrefs.group ? "var(--cobalt)" : "var(--ink-faint)"}`, background: panelPrefs.group ? "var(--cobalt)" : "transparent", color: panelPrefs.group ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>≡ cat</button>
         </div>
         {/* bulk actions — appear while a ⌘/⇧ multi-selection is live
             (liveChecked: the count never claims ids the list lost) */}

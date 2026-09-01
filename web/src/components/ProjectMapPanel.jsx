@@ -83,6 +83,7 @@ export default function ProjectMapPanel({
   onEdit, onRedraw, onDelete, onCancelEdit, onCancelRedraw, onReview,
 }) {
   const [scope, setScope] = useState("visible");
+  const [collapsed, setCollapsed] = useState(false);
   const selected = regions.find((region) => region.id === selectedRegionId) || null;
   const [note, setNote] = useState("");
   useEffect(() => setNote(selected?.review?.note || ""), [selected?.id, selected?.review?.note]);
@@ -93,10 +94,37 @@ export default function ProjectMapPanel({
   }, [regions, scope, visibleSheetIds]);
   const pending = regions.filter((region) => ["proposed", "needs_review"].includes(region.review?.status)).length;
 
+  if (collapsed) {
+    const tabTitle = selected ? `Rouvrir Project Map — ${selected.name}` : "Rouvrir Project Map";
+    return <button
+      type="button"
+      data-testid="project-map-expand-tab"
+      title={tabTitle}
+      aria-label={tabTitle}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={() => setCollapsed(false)}
+      style={{
+        // The canvas deliberately leaves a black utility corridor beside the
+        // tool rail. Use it like a physical recall tab: about 5 cm tall at the
+        // standard Windows CSS density, aligned with Area/Rectangle rather
+        // than hiding as a tiny control in the top corner.
+        position: "absolute", left: 8, top: 72, width: 48, height: 190,
+        padding: "12px 8px", border: "1px solid var(--c-positive)",
+        background: "var(--paper-bright)", color: "var(--c-positive)", boxShadow: "var(--shadow-pop)",
+        zIndex: Z.canvasUi + 2, cursor: "pointer", writingMode: "vertical-rl",
+        transform: "rotate(180deg)", fontSize: 10.5, fontWeight: 800,
+        letterSpacing: 0.7, textTransform: "uppercase", overflow: "hidden",
+        textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }}>
+      Project Map · {regions.length}
+    </button>;
+  }
+
   return <aside data-testid="project-map-panel" onPointerDown={(event) => event.stopPropagation()} style={{ position: "absolute", left: 14, top: 14, width: 374, maxWidth: "calc(100% - 28px)", maxHeight: "calc(100% - 28px)", overflowY: "auto", boxSizing: "border-box", padding: 14, background: "var(--paper-bright)", border: "1px solid var(--c-positive)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi + 2, color: "var(--ink)" }}>
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <div><b style={{ fontSize: 13.5 }}>Project Map</b><div style={{ fontSize: 10, color: "var(--ink-muted)", marginTop: 2 }}>{regions.length} zones · {pending} awaiting review</div></div>
-      <button type="button" title="Close Project Map" onClick={onClose} style={{ marginLeft: "auto", ...button("var(--ink-muted)"), padding: "3px 7px" }}>×</button>
+      <button type="button" data-testid="project-map-collapse" title="Réduire Project Map sur le côté" aria-label="Réduire Project Map sur le côté" onClick={() => setCollapsed(true)} style={{ marginLeft: "auto", ...button("var(--c-positive)"), padding: "3px 7px" }}>‹</button>
+      <button type="button" title="Close Project Map" onClick={onClose} style={{ ...button("var(--ink-muted)"), padding: "3px 7px" }}>×</button>
     </div>
 
     {redrawId && !editor ? <div data-testid="map-region-editor">
@@ -142,7 +170,7 @@ export default function ProjectMapPanel({
           <button type="button" data-testid="project-map-reject" onClick={() => onReview(selected.id, "rejected", note, "human_reject")} style={button("var(--c-danger)")}>Reject</button>
           <button type="button" disabled={!note.trim() || note.trim() === (selected.review?.note || "")} onClick={() => onReview(selected.id, selected.review?.status || "needs_review", note, "human_explanation")} style={{ ...button("var(--cobalt)"), opacity: !note.trim() || note.trim() === (selected.review?.note || "") ? 0.45 : 1 }}>Save explanation</button>
         </div>
-        <div style={{ display: "flex", gap: 5, marginTop: 7 }}><button type="button" onClick={() => onEdit(selected)} style={button("var(--ink-secondary)")}>Edit details & points</button><button type="button" onClick={() => onRedraw(selected.id)} style={button("var(--ink-secondary)")}>Manual redraw</button><button type="button" onClick={() => onDelete(selected.id)} style={button("var(--c-danger)")}>Delete</button></div>
+        <div style={{ display: "flex", gap: 5, marginTop: 7 }}><button type="button" onClick={() => { onEdit(selected); setCollapsed(true); }} style={button("var(--ink-secondary)")}>Edit details & points</button><button type="button" onClick={() => onRedraw(selected.id)} style={button("var(--ink-secondary)")}>Manual redraw</button><button type="button" onClick={() => onDelete(selected.id)} style={button("var(--c-danger)")}>Delete</button></div>
         {selected.review?.reviewed_at && <div style={{ marginTop: 7, fontSize: 9.5, color: "var(--ink-muted)" }}>Last verdict by {selected.review.reviewed_by || "human"} · {selected.review.reviewed_at}{selected.review.reason_code ? ` · ${selected.review.reason_code}` : ""}</div>}
       </section>}
       <button data-testid="project-map-new-zone" type="button" onClick={onStartNew} style={{ width: "100%", justifyContent: "center", marginTop: 13, ...button("var(--cobalt)", "var(--cobalt)") }}>+ Zone</button>

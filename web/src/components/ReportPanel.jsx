@@ -10,6 +10,7 @@ import { TABLE_PROFILE, CSV_PROFILE, colGetter, customColProfile, specColProfile
 import { rollReportRows, seamLfByShape } from "../lib/rollTakeoff.js";
 import { areaVal, areaUnit, lenVal, lenUnit } from "../lib/units";
 import { columnLabel } from "../lib/conditionColumns.js";
+import { partitionRowsByProductType } from "../lib/productTypes.js";
 import { shapeLabelValue } from "../lib/shapeLabels.js";
 import { loadTemplates, saveTemplate, deleteTemplate, renameTemplate, mergeTemplates, overwriteTemplates } from "../lib/reportTemplates.js";
 import { canSyncTemplates, pushTemplatesToDrive, loadTemplatesFromDrive } from "../lib/reportTemplatesSync.js";
@@ -184,6 +185,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   const groupBy = groupByRaw === "sheet"
     || (groupByRaw === "label" && shapeLabels.length > 0)
     || (groupByRaw === "map-zone" && regions.length > 0)
+    || (groupByRaw === "product-type" && conditions.some((condition) => condition.product_type))
     || conditionColumns.some((cc) => cc.id === groupByRaw) ? groupByRaw : "";
   // grouping force-includes its column in the CSV/XLSX even when hidden in
   // the picker (D7) — a grouped report's export always carries its grouping
@@ -220,10 +222,11 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   const mapGroups = useMemo(() => (groupBy === "map-zone"
     ? mapZoneGroupedRows(conditions, shapes, regions, seamCtx).map((group) => ({ ...group, label: group.sheet_id && sheetLabel ? `${sheetLabel(group.sheet_id)} · ${group.label}` : group.label }))
     : null), [groupBy, conditions, shapes, regions, seamCtx, sheetLabel]);
+  const productTypeGroups = useMemo(() => (groupBy === "product-type" ? partitionRowsByProductType(rows, conditions) : null), [groupBy, rows, conditions]);
   const groups = sheetGroups
     ? sheetGroups.map((gp) => ({ value: gp.sheet_id, label: sheetLabel ? sheetLabel(gp.sheet_id) : gp.sheet_id, rows: gp.rows, perimByCond: gp.perimByCond }))
-    : labelGroups || mapGroups || colGroups;
-  const grouped = Boolean(groups && (groups.length > 1 || ((groupCol || groupBy === "label" || groupBy === "map-zone") && groups.length === 1 && groups[0].value !== null)));
+    : labelGroups || mapGroups || productTypeGroups || colGroups;
+  const grouped = Boolean(groups && (groups.length > 1 || ((groupCol || groupBy === "label" || groupBy === "map-zone" || groupBy === "product-type") && groups.length === 1 && groups[0].value !== null)));
   // exports always carry the by-label breakdown when any shape is labeled,
   // independent of the current group-by view; empty (→ CSV/JSON byte-unchanged)
   // for label-less projects.
@@ -442,6 +445,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
             <option style={{ background: "var(--paper-bright)", color: "var(--ink)" }} value="sheet">Feuille</option>
             {shapeLabels.length > 0 && <option style={{ background: "var(--paper-bright)", color: "var(--ink)" }} value="label">Étiquette</option>}
             {regions.length > 0 && <option style={{ background: "var(--paper-bright)", color: "var(--ink)" }} value="map-zone">Zone du Project Map</option>}
+            {conditions.some((condition) => condition.product_type) && <option style={{ background: "var(--paper-bright)", color: "var(--ink)" }} value="product-type">Catégorie de Produit</option>}
             {conditionColumns.map((cc) => (
               <option style={{ background: "var(--paper-bright)", color: "var(--ink)" }} key={cc.id} value={cc.id}>{columnLabel(cc)}</option>
             ))}
@@ -720,7 +724,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
               the partition degenerates to one group. */}
           {grouped && (
             <p style={{ maxWidth: 980, margin: "0 auto 8px", fontSize: 11.5, color: "var(--ink-muted)" }}>
-              Regroupé par <strong>{groupCol ? columnLabel(groupCol) : groupBy === "label" ? "étiquette" : groupBy === "map-zone" ? "zone du Project Map" : "feuille"}</strong>
+              Regroupé par <strong>{groupCol ? columnLabel(groupCol) : groupBy === "label" ? "étiquette" : groupBy === "map-zone" ? "zone du Project Map" : groupBy === "product-type" ? "catégorie de Produit" : "feuille"}</strong>
             </p>
           )}
           <table style={{ width: "100%", maxWidth: 980, margin: "0 auto", borderCollapse: "collapse", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)" }}>

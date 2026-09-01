@@ -85,7 +85,8 @@ import { buildMarkedSetPdf, downloadBytes } from "../lib/markedset.js";
 import { loadProfiles } from "../lib/identity.js";
 import { resolveBranding, loadBrandingSelection } from "../lib/branding.js";
 import { starPath, cloudPath, thinStroke, strokePathD, chiselRibbon, buildSnapGrid, nearestSnap, ANGLE_TOL, angleSnap, closedMetrics, polyWithHolesMetrics, openLen, pointInPoly, hitShape, shapeContourHit, arrowheadPath, distToSeg, reflectVertsNorm } from "../lib/geometry.js";
-import { countFootprintFromVerts, countVertsAt, rectangularCountFootprint } from "../lib/countFootprint.js";
+import { countFootprintDimensions, countFootprintFromVerts, countVertsAt, rectangularCountFootprint, resizeCountVertsByFootprint } from "../lib/countFootprint.js";
+import { moveProductToPosition } from "../lib/productOrder.js";
 import { openingStagePoints, openingTemplateFromShape, sanitizeOpeningTemplates } from "../lib/openings.js";
 import { linearCountConfig, linearCountMetrics, linearCountPieces, linearCountUnitsPerPx } from "../lib/linearCount.js";
 import { conditionFillOpacity, conditionLineWidthPx } from "../lib/conditionAppearance.js";
@@ -134,7 +135,7 @@ import {
   PANEL_GAP, DETAIL_ENGAGE, DETAIL_MARGIN, MAX_CANVAS_DIM, MAX_CANVAS_AREA, SYNC_MS, GESTURE_MS, SNAP_CELL,
   MEASURE_TOOLS, CUT_TOOLS, MARKUP_TOOLS, MARKUP_IDS, HL_INKS, HL_SIZES, ROLL_GOODS_UI_ENABLED,
 } from "../lib/canvasConstants.js";
-import { uid, clamp, isDangerMsg, instantiateTemplate, seedConditions } from "../lib/canvasUtil.js";
+import { uid, clamp, isDangerMsg, instantiateTemplate, seedConditions, toolUsesAimCursor } from "../lib/canvasUtil.js";
 // Tile-pyramid rendering (#86) — pure math in lib/tiles.ts (tested), worker
 // pool in lib/tilePool.ts, DOM/Worker orchestration glue here via one
 // long-lived compositor instance. Replaces the old single-raster base +
@@ -2822,6 +2823,11 @@ export default function TakeoffCanvas() {
   }
 
   function returnToSelect() {
+    // Imperative aim/pan styles can outlive the React tool state by one pointer
+    // event. Restore the real cursor synchronously so closing Map never leaves
+    // an invisible pointer that needs another click to wake up.
+    hideCrosshair();
+    if (containerRef.current && !panRef.current) containerRef.current.style.cursor = "default";
     setPoly([]);
     setCalib([]);
     setCheck([]);
@@ -2903,6 +2909,13 @@ export default function TakeoffCanvas() {
   // remember the last armed measure tool — the Measure menu face shows it
   useEffect(() => { if (MEASURE_TOOLS.some((t) => t.id === tool)) lastMeasureRef.current = tool; }, [tool]);
   useEffect(() => { if (tool !== "map-region" && mapTraceActive) setMapTraceActive(false); }, [tool, mapTraceActive]);
+  useEffect(() => {
+    if (grumpCapture || (status === "ready" && toolUsesAimCursor(tool, mapTraceActive))) return;
+    for (const ref of [crossVRef, crossHRef, rubberRef, rectRef, cloudRef, highlightRef, snapMarkRef, aimMarkRef, aimChipRef]) {
+      if (ref.current) ref.current.style.display = "none";
+    }
+    if (containerRef.current && !panRef.current) containerRef.current.style.cursor = spaceRef.current ? "grab" : "default";
+  }, [tool, mapTraceActive, status, grumpCapture]);
   useEffect(() => {
     if (!LINKED_DEDUCT_TOOLS.has(tool) && tool !== "opening" && deductParentId) setDeductParentId(null);
   }, [tool, deductParentId]);
@@ -3168,6 +3181,7 @@ export default function TakeoffCanvas() {
     // (There is no Pan tool — Select's open-canvas drag and the deferred-click
     // hold-drag below cover the rest of the modeless-pan doctrine.)
     if (e.button === 1 || e.button === 2 || spaceRef.current) {
+      e.preventDefault();
       panRef.current = { sx: e.clientX, sy: e.clientY, ox: tfRef.current.x, oy: tfRef.current.y };
       e.currentTarget.setPointerCapture(e.pointerId);
       if (containerRef.current) containerRef.current.style.cursor = "grabbing";
@@ -3683,7 +3697,11 @@ export default function TakeoffCanvas() {
   }
   function moveCrosshair(e) {
     if (editingRef.current) return;   // inline editor open — no aim crosshair (ref check, never per-mousemove state)
-    if (tool === "select" || status !== "ready" || !containerRef.current) return;
+    if (!containerRef.current) return;
+    if (!toolUsesAimCursor(tool, mapTraceActive) || status !== "ready") {
+      if (!panRef.current && !grumpCapture) containerRef.current.style.cursor = spaceRef.current ? "grab" : "default";
+      return;
+    }
     // snap-to-vector: nearest PDF endpoint within threshold becomes the active
     // point — looked up in the hovered panel's grid, in that panel's local frame
     let cur = toImage(e.clientX, e.clientY);
@@ -5921,6 +5939,9 @@ export default function TakeoffCanvas() {
   }
 
   function startMapRegionVertexDrag(event, region, vIndex, vertsNorm = region.geometry.verts_norm, dirty = false) {
+    // Only the primary button edits geometry. Right/middle presses bubble to
+    // the canvas so the estimator can pan without leaving Project Map.
+    if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     const panel = panelByKey(region.sheet_id);
@@ -5941,6 +5962,7 @@ export default function TakeoffCanvas() {
   }
 
   function insertMapRegionVertex(event, region, edgeIndex) {
+    if (event.button !== 0) return;
     const verts = region.geometry.verts_norm;
     const nextIndex = (edgeIndex + 1) % verts.length;
     const a = verts[edgeIndex], b = verts[nextIndex];
@@ -7182,7 +7204,52 @@ export default function TakeoffCanvas() {
   // By-id core + active-based convenience: one save chokepoint. Voice combo
   // intents ("cpt one waste seven") patch a condition activated in the SAME
   // handler, before re-render — the active-based form would hit the old active.
-  const updateCondById = (id, patch) => setConditions((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch, updated_at: nowIso() } : c)));
+  const updateCondById = (id, patch) => {
+    const previous = conditions.find((condition) => condition.id === id);
+    setConditions((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch, updated_at: nowIso() } : c)));
+
+    const footprintChanged = Object.prototype.hasOwnProperty.call(patch, "count_footprint") && patch.count_footprint;
+    const jointChanged = Object.prototype.hasOwnProperty.call(patch, "count_joint_in");
+    if (!previous || (!footprintChanged && !jointChanged)) return;
+
+    const nextFootprint = footprintChanged ? patch.count_footprint : previous.count_footprint;
+    const nextDims = footprintChanged ? countFootprintDimensions(nextFootprint) : null;
+    setShapes((currentShapes) => currentShapes.map((shape) => {
+      if (shape.condition_id !== id) return shape;
+      if (shape.measure_role === "count" && footprintChanged) {
+        const dims = panelImgs[shape.sheet_id];
+        const resolution = dims?.w ? resolveScaleForShape(shape) : null;
+        let vertsNorm;
+        if (dims?.w && dims?.h && resolution?.status === "resolved") {
+          const centerPx = shape.verts_norm.reduce((sum, [nx, ny]) => [sum[0] + nx * dims.w, sum[1] + ny * dims.h], [0, 0])
+            .map((value) => value / shape.verts_norm.length);
+          vertsNorm = countVertsAt(centerPx, dims, resolution.effective_upp, nextFootprint);
+        }
+        return { ...shape, verts_norm: vertsNorm || resizeCountVertsByFootprint(shape.verts_norm, previous.count_footprint, nextFootprint) };
+      }
+      if (shape.measure_role === "count_run" && (footprintChanged || jointChanged)) {
+        const countRun = {
+          ...(shape.count_run || {}),
+          ...(footprintChanged ? { height_in: nextDims.height_in } : {}),
+          ...(jointChanged ? { joint_in: Math.max(0, Number(patch.count_joint_in) || 0) } : {}),
+        };
+        const count = Number(shape.computed?.count) || 0;
+        const unitLength = Number(countRun.unit_length_in) || 0;
+        const joint = Number(countRun.joint_in) || 0;
+        return {
+          ...shape,
+          count_run: countRun,
+          computed: {
+            ...(shape.computed || {}),
+            joint_in: joint,
+            nominal_total_in: +(count * unitLength).toFixed(4),
+            installed_span_in: +(count * unitLength + Math.max(0, count - 1) * joint).toFixed(4),
+          },
+        };
+      }
+      return shape;
+    }));
+  };
   const updateCond = (patch) => updateCondById(activeCond, patch);
 
   // delete a condition entirely (and its takeoffs); pick a new active one
@@ -7595,6 +7662,14 @@ export default function TakeoffCanvas() {
     setActiveCond(id);
     panelSelectionRef.current?.();   // plain activation dismisses a live bulk selection (panel view state)
   };
+  const reorderCondition = (id, position) => {
+    const next = moveProductToPosition(conditions, id, position);
+    if (next === conditions) return;
+    setConditions(next);
+    const moved = next.find((condition) => condition.id === id);
+    const actualPosition = next.findIndex((condition) => condition.id === id) + 1;
+    setCommitMsg(`${moved?.finish_tag || "Produit"} déplacé à la position ${actualPosition}.`);
+  };
   // The label analogue (#111): with a shape selected in Select mode this re-labels
   // it (mirroring activateCondition's reassign-on-activate); otherwise it just sets
   // the active label for subsequent traces. value "" / null = No label / clear.
@@ -7671,6 +7746,7 @@ export default function TakeoffCanvas() {
   const condToTemplate = (c) => ({
     finish_tag: c.finish_tag, color: c.color, fill: c.fill, hatch: c.hatch || "solid",
     waste_pct: c.waste_pct || 0,
+    ...(c.product_type ? { product_type: c.product_type } : {}),
     ...(c.height_ft != null ? { height_ft: c.height_ft } : {}),
     ...(c.thickness_in != null ? { thickness_in: c.thickness_in } : {}),
     ...(c.length_in != null ? { length_in: c.length_in } : {}),
@@ -7814,7 +7890,7 @@ export default function TakeoffCanvas() {
     onUpdateLibMaterial: updateLibMaterial, onPushLibUpdate: pushLibUpdate,
     onDeleteLibMaterial: deleteLibMaterial, onAddLibMaterial: addLibMaterial,
     matFieldOverridden,   // pure helper, not an event handler — the forwarder returns its result
-    onToggleCollapse: toggleTakeoffs, onTogglePin: togglePin,
+    onToggleCollapse: toggleTakeoffs, onTogglePin: togglePin, onReorderCondition: reorderCondition,
     // these three are ALREADY stable on their own (setState identity, and
     // holdPanelGesture is a useCallback with an empty dep array) — routed
     // through the registry anyway so the memo contract has exactly ONE
@@ -8628,7 +8704,7 @@ export default function TakeoffCanvas() {
         <div ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp} onLostPointerCapture={onPointerUp} onPointerLeave={leaveCanvas} onContextMenu={(e) => e.preventDefault()}
           onDoubleClick={(e) => { if (grumpCaptureStateRef.current?.capture_tool === "polygon") { e.preventDefault(); completeGrumpCapture({ dropDoubleClick: true }); } else if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); } else if (tool === "area" || isDeductPolyTool(tool) || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone" || (tool === "map-region" && mapTraceActive)) finishShape(); else if (tool === "select") editMarkupAt(e); }}
-          style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "var(--paper-cream)", cursor: grumpCapture ? "crosshair" : (tool === "select" || (tool === "map-region" && !mapTraceActive)) ? "default" : "none", touchAction: "none" }}>
+          style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "var(--paper-cream)", cursor: grumpCapture ? "crosshair" : (status === "ready" && toolUsesAimCursor(tool, mapTraceActive)) ? "none" : "default", touchAction: "none" }}>
           {/* aim crosshair (draw modes): the OS cursor is hidden on the canvas — the
               crosshair IS the cursor. Two crisp full-page hairlines riding the
               EFFECTIVE point (angle-locked / endpoint-snapped), the SPLINE STAR at
@@ -9116,6 +9192,9 @@ export default function TakeoffCanvas() {
                             strokeDasharray={selected ? undefined : `${7 / tf.scale} ${5 / tf.scale}`}
                             style={{ cursor: mapTraceActive ? "crosshair" : "pointer", pointerEvents: mapTraceActive ? "none" : "all" }}
                             onPointerDown={(event) => {
+                              // A Map outline claims only a deliberate primary
+                              // selection. Right/middle drag remain camera pan.
+                              if (event.button !== 0) return;
                               event.preventDefault();
                               event.stopPropagation();
                               focusMapRegion(region);
@@ -9506,7 +9585,7 @@ export default function TakeoffCanvas() {
             detectedScales={detectedScales}
             standardScales={STANDARD_SCALES}
             sheetLabel={tabLabel}
-            onClose={() => { setTool("select"); setPoly([]); setSelectedRegionId(null); setRegionEditor(null); setRegionRedrawId(null); setMapTraceActive(false); }}
+            onClose={returnToSelect}
             onSelect={focusMapRegion}
             onStartNew={() => { setPoly([]); setSelectedRegionId(null); setRegionEditor(null); setRegionRedrawId(null); setMapTraceActive(true); setCommitMsg("Trace the new Project Map zone, then Finish."); }}
             onEditorChange={setRegionEditor}

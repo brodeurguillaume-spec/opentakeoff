@@ -39,6 +39,27 @@ export function countFootprintDimensions(rawFootprint) {
   };
 }
 
+// Resize an already-placed Count symbol around its own centre when the
+// Product's reusable X/Y dimensions change. Normalized sheet coordinates can
+// be scaled directly by the physical width/height ratios, so this also works
+// for Count shapes on sheets that are not currently rendered. A zero target
+// height deliberately collapses a polygon into a line. Expanding a legacy
+// zero-height line needs live sheet dimensions and is handled by the canvas's
+// countVertsAt path; this pure fallback keeps its existing line geometry.
+export function resizeCountVertsByFootprint(vertsNorm, oldFootprint, newFootprint) {
+  if (!Array.isArray(vertsNorm) || vertsNorm.length < 2) return vertsNorm;
+  const before = countFootprintDimensions(oldFootprint);
+  const after = countFootprintDimensions(newFootprint);
+  const sx = before.width_in > 0 ? after.width_in / before.width_in : 1;
+  const sy = before.height_in > 0 ? after.height_in / before.height_in : (after.height_in === 0 ? 0 : 1);
+  const center = vertsNorm.reduce((sum, [x, y]) => [sum[0] + Number(x), sum[1] + Number(y)], [0, 0])
+    .map((v) => v / vertsNorm.length);
+  return vertsNorm.map(([x, y]) => [
+    +(center[0] + (Number(x) - center[0]) * sx).toFixed(12),
+    +(center[1] + (Number(y) - center[1]) * sy).toFixed(12),
+  ]);
+}
+
 const finitePair = (v) => Array.isArray(v) && v.length === 2
   && Number.isFinite(Number(v[0])) && Number.isFinite(Number(v[1]));
 

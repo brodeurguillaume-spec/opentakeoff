@@ -5,6 +5,27 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 ## Unreleased — GRUMP loopback bridge
 
 ### Added
+
+- **Product categories now organize both work and reporting.** The Product picker's type is no
+  longer dormant metadata: `≡ cat` groups the current-sheet list into Brique, Pierre, Allège and
+  the other business categories while preserving manual order inside each one, and the Report can
+  now group/subtotal by **Catégorie de Produit**. Saved Product templates keep their category.
+- **Count Product edits now reflow existing symbols.** Editing X/Y resizes Counts already placed
+  on the plans around their centre; Y and joint changes also refresh existing linear distributions.
+  Nominal length stays informational on ordinary Counts and remains functional only for linear
+  distribution, where it defines the piece length and count.
+- **Product duplication is visible on the row.** The new `⎘` action opens the existing named-copy
+  workflow directly instead of hiding it at the bottom of Supporting Materials.
+- **Products now have a durable manual order.** Every row shows its canonical one-based position;
+  selecting a Product turns that badge into discreet up/down arrows and an editable 1–99 position
+  field committed with `Enter`. Moving one Product closes the gap and shifts the rest of the list
+  without changing IDs, quantities or geometry; A–Z/group views yield to the manual order when it
+  is explicitly changed.
+- **Project Map can collapse into a slim recall tab while geometry stays active.** The panel can be
+  tucked against the left edge at any time, and **Edit details & points** does so automatically;
+  clicking the tab restores the same selected zone and card without leaving Map. Right- and
+  middle-drag now pass through Map outlines and vertex/edge grips to pan the sheet, while only the
+  primary button can select or modify Map geometry.
 - **Sheets can open as a top-to-bottom working set.** Select 2–12 pages in the
   gallery and open them stacked in the chosen order; the first page opens at a
   readable fit, the wheel scrolls the set, and `Ctrl`+wheel zooms around the
@@ -133,6 +154,9 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 - **The bridge now tells GRUMP which PDF and sheet are actually visible.** Document, active sheet, and side-by-side sheet IDs are published as transient context rather than journaled takeoff facts. This lets the shell filter its durable proposal queue without deleting hidden work; selecting a proposal on another open sheet navigates there before applying the temporary highlight.
 
 ### Fixed
+- **Closing or merely browsing Project Map no longer leaves the mouse pointer invisible.** The OS
+  cursor now yields only while a real aim/drawing crosshair is active; switching Map back to Select
+  restores it synchronously instead of waiting for another click or pointer event.
 - **A long-lived AnvilTrace window no longer loses Marked Set export after a rebuild.** The core
   PDF library now ships in the application bundle instead of a disposable lazy-loaded hash chunk.
   Export progress and failures also remain visible inside the Report panel, so a failed download

@@ -5,7 +5,7 @@
 // a degraded low-res proxy (the "jagged linework" bug, 2026-07-20).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { autoRenderScale } from "../src/lib/canvasUtil.js";
+import { autoRenderScale, toolUsesAimCursor } from "../src/lib/canvasUtil.js";
 import { RENDER_SCALE } from "../src/lib/sheets";
 import { MAX_PANEL_AREA, MAX_CANVAS_DIM, QUALITY_CEILING } from "../src/lib/canvasConstants.js";
 
@@ -34,4 +34,12 @@ test("an oversized 1px=1pt image page renders BELOW baseline, inside the panel b
 test("degenerate dims fall back to the baseline", () => {
   assert.equal(autoRenderScale(0, 0), RENDER_SCALE);
   assert.equal(autoRenderScale(-1, 100), RENDER_SCALE);
+});
+
+test("the OS cursor only yields to a real aim/drawing state", () => {
+  assert.equal(toolUsesAimCursor("select"), false);
+  assert.equal(toolUsesAimCursor("map-region", false), false, "Map review keeps the visible pointer");
+  assert.equal(toolUsesAimCursor("map-region", true), true, "an armed Map trace owns the aim crosshair");
+  assert.equal(toolUsesAimCursor("area"), true);
+  assert.equal(toolUsesAimCursor("rect"), true);
 });

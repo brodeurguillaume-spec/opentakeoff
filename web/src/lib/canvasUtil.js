@@ -48,6 +48,12 @@ export function invertCanvasPixels(cv) {
 
 export const uid = (p) => `${p}-${mintUuid()}`;
 export const clamp = (s) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+// The OS pointer may disappear only when the canvas is actively drawing its
+// own full-page aim crosshair. Project Map's browse/review state is not a draw
+// tool: its outlines are selectable, but the ordinary pointer must remain.
+export const toolUsesAimCursor = (tool, mapTraceActive = false) => (
+  tool !== "select" && !(tool === "map-region" && !mapTraceActive)
+);
 // shared by the status-bar tone AND the auto-dismiss skip (in the canvas) — one
 // definition of "this message is bad news" for both readers
 export const isDangerMsg = (s) => s === STALE_TAB_MESSAGE || s.startsWith("Commit failed") || s.startsWith("Couldn't");
@@ -58,6 +64,7 @@ export const instantiateTemplate = (t) => ({
   id: uid("cnd"), created_at: nowIso(), finish_tag: t.finish_tag || "?",
   color: t.color || PALETTE[0], fill: t.fill ?? t.color ?? PALETTE[0],
   hatch: t.hatch || "solid", multiplier: 1, waste_pct: Number(t.waste_pct) || 0,
+  ...(t.product_type ? { product_type: t.product_type } : {}),
   ...(t.height_ft != null ? { height_ft: t.height_ft } : {}),
   ...(t.thickness_in != null ? { thickness_in: t.thickness_in } : {}),
   ...(t.length_in != null ? { length_in: t.length_in } : {}),
