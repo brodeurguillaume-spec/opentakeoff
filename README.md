@@ -83,9 +83,9 @@ second use is not a side effect; see [the data layer](#the-data-layer--why-this-
   gets the schedule row with a citation per cell, across continuation sheets, rotated headers,
   and multi-building keys: `sheet_graph` / `resolve_tag` / `find_schedule`
   ([#87](https://github.com/Kentucky-ai/opentakeoff/issues/87))
-- **Roll goods** — opt a condition into broadloom or sheet material and the engine figures the
-  seams: lanes, multi-roll splits, cuts drawn to scale over their rooms in cutting order, a
-  to-scale roll diagram with drag-to-reorder, and order footage beside the measured quantities
+- **Roll-goods engine (UI dormant in AI Takeoff)** — the retained engine figures lanes, seams,
+  multi-roll splits, to-scale cuts and order footage when a persisted roll setup exists; its
+  flooring-specific setup controls are currently hidden behind a feature flag
   ([#136](https://github.com/Kentucky-ai/opentakeoff/issues/136))
 - **Transitions, at the canvas** — **⟂ Transitions…** in the Takeoffs panel derives the line where
   two finishes meet from rooms you already measured; `derive_transitions` does the same over MCP.
@@ -195,7 +195,9 @@ are the rules that make this one safe to hand a model, and why each one exists:
    the canvas still runs the identical operator-wins merge and review gate, and reports the
    resulting Accept/Undo/edit/delete facts back to the session. This bridge is opt-in and
    loopback-only. While embedded, GRUMP is the single agent authority, so the native BYO-AI
-   Agent rail and settings are hidden; opening OpenTakeoff normally keeps them unchanged.
+   Agent rail and settings are hidden; opening OpenTakeoff normally keeps them unchanged. A new
+   project with no PDF reports an explicit no-document state, so GRUMP waits for the first sheet
+   without raising a false synchronization failure.
 6. **The deliverable is a marked-up planset, not JSON.** `export_marked_pdf` burns the work
    into the drawings as drawn — condition colors, hatches, quantity chips, count markers —
    behind a legend cover with totals and a tally of how much of the set a person has actually
@@ -258,8 +260,11 @@ is in its [glossary](docs/USER_GUIDE.md#18-glossary--what-the-words-mean-here).
 ### Open anything, instantly
 A plan **PDF**, an **image** (scan, screenshot, photo), or a whole **`.zip` plan set** straight
 off a bid platform. Zips are unpacked and images wrapped to PDF *in your browser* — multi-page,
-multi-file, up to **4 sheets side-by-side**, with hostile-archive guards so a malformed zip
+multi-file, up to **4 sheets side-by-side** or **12 in a scrollable vertical working set**, with hostile-archive guards so a malformed zip
 fails cleanly instead of ballooning the tab. No upload step, no conversion service, no account.
+The Sheets gallery can select the complete set, persist clear manual page names, and rotate one
+or many pages by quarter-turn. Existing takeoffs, markups, multi-scale Map zones and marked-set
+exports remain in the same visual position after rotation.
 
 ### A real measuring engine
 **One-Click Area** is the headline: click inside a room, the linework bounds a flood fill, the
@@ -271,13 +276,21 @@ adaptive thresholding, polarity detection for blueprint negatives, a gap-bridgin
 faded ink — and badges the result so you verify the edges before committing. On CAD exports
 that publish a layer tree, One-Click reads the declared roles instead of inferring them.
 
-Plus the full manual kit — **Area, Rectangle, Linear, Curved Line, Surface Area (walls),
-Count**, and **Cut Out** deducts — and a **Zone check** that answers "what's in this wing?"
+Plus the full manual kit — **Area, Rectangle, Linear, Répartition linéaire, Curved Line, Surface Area (walls),
+Count**, and **Cut Out** deducts. Count places a calibrated 1′ square by default; reshape it once
+and that Takeoff Item reuses the same real-size symbol across sheets. Select an Area and press
+**`E`** to create an explicitly
+linked opening whose geometry, parent hole, duplication, deletion, and undo/redo stay atomic;
+`D` remains the automatic/free deduction path. A **Zone check** answers "what's in this wing?"
 without touching the takeoff.
 
 **Project Map** is the durable companion: trace and name sheet-scoped rooms, plans,
 sections, elevations, or details without needing a scale. The semantic outlines stay hidden
-outside Map mode, persist with the project, and can be renamed, redrawn, deleted, or undone.
+outside Map mode, persist with the project, and can be renamed, edited point-by-point, manually
+redrawn, deleted, or undone. Round grips move/delete vertices; edge diamonds add them. Each
+completed contour correction creates a human-confirmed audited region revision. **+ Zone** now
+hands the whole canvas to the trace, then reopens the desk on the naming card when the contour is
+finished. A zone can instead be saved with its name explicitly queued for GRUMP.
 A zone may also carry a human-confirmed scale for an enlarged plan or detail. That scale applies
 only inside its outline; nested zones override parents, while a measurement crossing a scale
 boundary refuses and asks you to split it instead of guessing.
@@ -286,7 +299,8 @@ Map mode now opens a **Project Map desk** instead of leaving those polygons as a
 outlines. It can inspect the visible sheets or the whole project, and each card exposes its
 semantic type, review state, scale and analysis profiles, per-field confidence, evidence, and
 links to other zones or sheets. Human **Accept / Needs review / Reject** verdicts preserve the
-zone, while **Modify / Redraw / Delete** remain explicit geometry actions. A correction note can
+zone, while **Edit details & points / Manual redraw / Delete** remain explicit geometry actions.
+Manual redraw is deliberately a human Map trace, not an implicit GRUMP retry. A correction note can
 be saved with the verdict so GRUMP's journal remembers why the estimator changed the map.
 When embedded in the GRUMP shell, a `region.proposed` event can also add a candidate card
 directly to this desk. It opens on the correct sheet, remains visibly **Proposed**, and carries
@@ -316,20 +330,34 @@ the preview thickens, a chip shows the locked angle and the live segment length.
 Auto-detects the drawn scale note, or **calibrate** from any known dimension. Scale is
 remembered **per sheet**, because plan sets are never one uniform scale and tools that assume
 they are get the numbers wrong. Named Project Map zones add the second level: a confirmed zone
-scale overrides the sheet fallback only inside that viewport. **Check a dimension** (`K`) is calibrate's read-only twin: pick
-a printed dimension string, type what the drawing says, and get a graded verdict (green within
-1%, amber within 5%, red past it) plus a one-tap **Recalibrate to this**. Every scale
+scale overrides the sheet fallback only inside that viewport. **Reference dimension** (`K`) places
+a persistent two-point ruler without entering the takeoff; `Ctrl`+click extends a multi-segment
+chain and the final ordinary click records every segment plus their total. Every scale
 acceptance drops an ephemeral calibrated ruler bar on the sheet, so a 2×-off scale is obvious
 before anything gets traced. Imperial or metric (m²/m, 1:50-style ratios) is a display toggle —
 takeoffs are stored unit-agnostically, so flipping it never changes a measurement.
 
-### Conditions, materials, and the buy list
-A **condition** is one finish (LVP, carpet, tile, base…), carrying a line/fill color, a **CAD
+### Takeoff items, materials, and the buy list
+A **Product** (shown as **Produit** in the working UI and stored as a `condition` for file/API
+compatibility) is one measured product
+or assembly (brick, stone, siding, wall type, LVP, carpet…), carrying a line/fill color, a **CAD
 hatch pattern** so the canvas reads like the real drawing, a per-condition **waste %**, an
 **×N multiplier**, a default wall **height**, and a **thickness** that turns a linear run into
-border SF. **Import from schedule** parses the architect's finish table off the sheet into
+border SF, plus an optional nominal **length** (stored in inches) for counted components. Fill
+opacity is adjustable from 0–100%; outline width is a visual 0.5–8 px and stays constant while
+zooming, so neither setting changes SF, LF or EA.
+Creating one requires only its name and activates it immediately; product type, materials and the
+rest of the fiche remain optional details that can be completed later. New projects start with an
+empty Product list instead of importing the old flooring starters.
+**Import from schedule** parses the architect's finish table off the sheet into
 conditions behind a verify dialog — you approve what becomes a condition, and the product spec
 rides along as read-only report columns.
+
+Named **opening templates** form a project-scoped deduction library. Any selected deduction can be
+saved explicitly after it is drawn, or a saved door/window shape can be armed before placement.
+Templates store physical geometry, so they reuse at the correct size across calibrated sheets.
+Neither path prompts on every deduction. Report and marked-set exports list deductions by sheet with
+their opening name, deduction ID, and parent shape ID.
 
 **Supporting Materials** is the layer most takeoff tools punt on: per condition, a labor type
 and a subfloor type, plus the consumables that actually go on the order — adhesive, sealer,
@@ -339,7 +367,11 @@ coverage, **rounded up** to whole units. Adhesive and mortar lines get coverage 
 derives SF/bag from tile size, thickness, joint width, and bag weight. Preset values are
 industry-typical round numbers — always verify against the product data sheet.
 
-### Roll goods — the seams, figured
+### Roll goods — engine retained, editor dormant in AI Takeoff
+The roll-goods calculation and persisted project data remain in the codebase, but its
+flooring-specific setup controls are hidden in the current AI Takeoff interface. One feature flag
+can restore them later without a data migration.
+
 Opt a condition into broadloom or sheet material (material class, roll width, max roll length,
 seam and wall allowances, direction, sell unit) and the engine lays out the cuts: lanes, seam
 placement, multi-roll splits, and order footage. Cuts draw to scale over their own rooms in
@@ -364,7 +396,7 @@ sheets — the gap between panels isn't real distance, so the commit refuses and
 stitching.
 
 ### Reports, exports, and revisions
-A per-condition breakdown — **Floor / Wall / Border SF, LF, EA, total SF, SY**, with and
+A per-item breakdown — **Floor / Wall / Border SF, LF, EA, total SF, SY**, with and
 without waste — plus a combined **materials buy list**. Waste applies only in the report's
 order quantity, never to the live measured number, so the takeoff and the buy list stay honest
 about which is which. Export **CSV**, **JSON**, a real **Excel workbook** (Summary / By-sheet /
@@ -386,7 +418,10 @@ live takeoff first, so it's never a one-way door.
 ### Markups, seals, and RFIs
 A separate layer the totals never count: revision clouds, callouts, text notes, highlighter
 ink, and reusable **stamps** (plank direction, seam direction, pattern origin — build your own,
-or import an `.svg`). **Approval seals** are the estimator's ink: click a committed takeoff to
+or import an `.svg`). The Markups chevron pins these tools directly to the left rail; delayed
+tooltips identify them without covering active work. Text is editable in the panel or on the plan:
+`Enter` saves and `Alt+Enter` inserts a line break that survives the Marked Set PDF.
+**Approval seals** are the estimator's ink: click a committed takeoff to
 approve it, and the Marked Set's cover gains a tally line — *N estimator-approved · N
 agent-marked* — so a PM knows exactly how much of the set a person has looked at. The **RFI
 register** turns any markup into a tracked question with status, priority, ball-in-court, and
@@ -464,13 +499,13 @@ plus a vision-capable model id.
 | Area | What you get |
 |---|---|
 | **Ingest** | PDF, image, or `.zip` plan set — unpacked in-browser, multi-page, multi-file, up to 4 sheets side-by-side |
-| **Scale** | Auto-detect the drawn note, calibrate from a known dimension, or verify one with a graded check — per sheet |
-| **Measure** | One-Click Area (vector flood + raster fallback), Area, Rectangle, Linear, Curved Line, Surface Area, Count, Cut Out deducts, ⟂ Transitions, Zone check — imperial or metric |
-| **Organize** | Persistent Project Map zones for named rooms, plans, sections, elevations, details, and other semantic areas — no scale required |
+| **Scale** | Auto-detect the drawn note, calibrate from a known dimension, and place persistent `K` reference dimensions — per sheet |
+| **Measure** | One-Click Area (vector flood + raster fallback), Area, Rectangle, Linear, Répartition linéaire (guide → centred EA pieces with configurable joints), Curved Line, Surface Area, Count, explicit-parent Cut Out deducts (`E`/`⇧E`) plus automatic/free deducts (`D`/`⇧D`), optional repeated-deduction suggestions (off by default), ⟂ Transitions, Zone check — imperial or metric |
+| **Organize** | Persistent Project Map zones for named rooms, plans, sections, elevations, details, and other semantic areas — visible as a hierarchy in Columns and usable as a Report grouping |
 | **Drawing aids** | 45°/90° angle lock with `⇧` hard-lock, live angle + segment-length readout at the cursor, endpoint Snap (beta) |
-| **Conditions** | Color + CAD hatch per finish, waste %, ×N multiplier, wall height, border thickness, schedule import, browser-wide library |
+| **Products** | Color + CAD hatch per product/assembly, visual fill opacity + zoom-stable outline width, waste %, ×N multiplier, wall height, border thickness, nominal item length, reusable calibrated Count footprint/tag, default joint for linear distributions, schedule import, browser-wide library |
 | **Supporting Materials** | Labor + subfloor type, coverage rate × basis (incl. figured seam LF) → rounded order quantities, trowel/roller presets, grout calculator |
-| **Roll goods** | Per-condition roll setup → lanes, seams, multi-roll splits, to-scale cuts with drag-to-reorder nesting, Roll Order LF + Rolls + figured Seam LF on every export |
+| **Roll goods** | Engine and persisted data retained; flooring-specific setup UI currently dormant behind a feature flag |
 | **Multi-sheet** | Sheet gallery, tabs and side-by-side groups, Regroup, levels, **stitching across a match line**, PDF layer roles |
 | **Report** | Per-condition Floor/Wall/Border SF, LF, EA, SY with and without waste, plus the combined buy list; columns, grouping, saved templates |
 | **Export** | CSV, JSON, **Excel (.xlsx)**, print, **Marked Set PDF**, RFI CSV/JSON |

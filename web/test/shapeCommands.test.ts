@@ -57,7 +57,7 @@ function roundTrip(shapes: any[], cmd: any) {
 // ── policy completeness ──────────────────────────────────────────────────────
 
 test("every applied command type has a PROVENANCE_POLICY row; unknown types throw", () => {
-  for (const t of ["add", "geom", "reassign", "label", "delete", "replace", "cutout"]) {
+  for (const t of ["add", "geom", "reassign", "label", "delete", "replace", "review", "ruleApply", "cutout", "cutoutGeom", "cutoutMove", "rollcut"]) {
     assert.ok(t in PROVENANCE_POLICY, `policy row missing for ${t}`);
   }
   assert.throws(() => applyShapeCommand([], { type: "resize" } as any), /PROVENANCE_POLICY/);
@@ -120,6 +120,91 @@ test("cutout: parent missing → refuses (inverse null, nothing minted); restore
   assert.equal(res.inverse, null);
   const res2 = applyShapeCommand([], { type: "cutout", restore: true, deductId: "shp-gone", parentId: "p", parentPrev: { verts_norm: [] } } as any);
   assert.equal(res2.inverse, null);
+});
+
+test("cutoutGeom: edits the deduct and its parent atomically; undo/redo restore both exactly", () => {
+  const parent: any = {
+    id: "shp-parent", created_at: "2026-01-01T00:00:00.000Z", sheet_id: "a.pdf#1",
+    condition_id: "cnd-1", measure_role: "floor_area",
+    verts_norm: [[0, 0], [1, 0], [1, 1], [0, 1]],
+    verts_norm_holes: [[[0.1, 0.1], [0.2, 0.1], [0.2, 0.2], [0.1, 0.2]]],
+    computed: { area_sf: 99, perimeter_lf: 44 }, origin: { method: "manual" },
+  };
+  const deduct: any = {
+    id: "shp-cut", created_at: "2026-01-01T00:00:00.000Z", sheet_id: "a.pdf#1",
+    condition_id: "cnd-1", measure_role: "deduct", cuts_shape_id: parent.id,
+    verts_norm: [[0.1, 0.1], [0.2, 0.1], [0.2, 0.2], [0.1, 0.2]],
+    computed: { area_sf: 1, perimeter_lf: 4 },
+    origin: { method: "cutout_v1", cuts_shape_id: parent.id, parent_prev: { verts_norm: parent.verts_norm, computed: { area_sf: 100, perimeter_lf: 40 } } },
+  };
+  const before = [clone(parent), clone(deduct)];
+  const nextVerts = [[0.3, 0.3], [0.5, 0.3], [0.5, 0.5], [0.3, 0.5]];
+  const cmd: any = {
+    type: "cutoutGeom", id: deduct.id, parentId: parent.id, editKind: "move",
+    verts_norm: nextVerts, computed: { area_sf: 4, perimeter_lf: 8 }, prev: geomSnapshot(deduct),
+    parentNext: {
+      verts_norm: parent.verts_norm,
+      verts_norm_holes: [nextVerts],
+      computed: { area_sf: 96, perimeter_lf: 48 },
+    },
+  };
+  const fwd = applyShapeCommand(before, cmd);
+  assert.deepEqual(fwd.shapes[0].verts_norm_holes, [nextVerts], "the parent follows the moved opening");
+  assert.deepEqual(fwd.shapes[1].verts_norm, nextVerts, "the deduct and its visual outline move together");
+  assert.ok(fwd.shapes[1].updated_at, "the deduct receives the normal geometry edit stamp");
+  assert.equal(fwd.shapes[0].updated_at, undefined, "the derived parent patch is not a human geometry edit");
+
+  const undone = applyShapeCommand(fwd.shapes, fwd.inverse);
+  assert.deepEqual(undone.shapes, before, "undo restores parent and deduct byte-for-byte");
+  const redone = applyShapeCommand(undone.shapes, undone.inverse);
+  assert.deepEqual(redone.shapes, fwd.shapes, "redo restores the edited pair without another stamp");
+});
+
+test("cutoutGeom: refuses an orphan or a deduct linked to another parent", () => {
+  const deduct = { id: "d", cuts_shape_id: "p1", verts_norm: [[0, 0], [1, 0], [1, 1]] };
+  const parent = { id: "p2", verts_norm: [[0, 0], [1, 0], [1, 1]] };
+  const res = applyShapeCommand([parent, deduct], {
+    type: "cutoutGeom", id: "d", parentId: "p2", editKind: "move",
+    verts_norm: deduct.verts_norm, parentNext: parent,
+  } as any);
+  assert.equal(res.inverse, null);
+  assert.deepEqual(res.shapes, [parent, deduct]);
+});
+
+test("cutoutMove: parent, holes, linked deducts, and durable restore geometry move as one", () => {
+  const parent: any = {
+    id: "p", sheet_id: "a.pdf#1", condition_id: "c", measure_role: "floor_area",
+    verts_norm: [[0, 0], [0.8, 0], [0.8, 0.8], [0, 0.8]],
+    verts_norm_holes: [[[0.1, 0.1], [0.2, 0.1], [0.2, 0.2], [0.1, 0.2]]],
+    computed: { area_sf: 63 }, origin: { method: "manual" },
+  };
+  const deduct: any = {
+    id: "d", sheet_id: "a.pdf#1", condition_id: "c", measure_role: "deduct", cuts_shape_id: "p",
+    verts_norm: [[0.1, 0.1], [0.2, 0.1], [0.2, 0.2], [0.1, 0.2]], computed: { area_sf: 1 },
+    origin: { method: "cutout_v1", parent_prev: { verts_norm: parent.verts_norm, computed: { area_sf: 64 } } },
+  };
+  const before = [clone(parent), clone(deduct)];
+  const nextRows = [
+    { ...parent, computed: { area_sf: 62.5 } },
+    { ...deduct, computed: { area_sf: 1.5 } },
+  ];
+  const fwd = applyShapeCommand(before, {
+    type: "cutoutMove", parentId: "p", dx: 0.05, dy: -0.02, prevRows: before, nextRows,
+  } as any);
+  assert.deepEqual(fwd.shapes[0].verts_norm[0], [0.05, -0.02]);
+  assert.ok(Math.abs(fwd.shapes[0].verts_norm_holes[0][0][0] - 0.15) < 1e-12);
+  assert.ok(Math.abs(fwd.shapes[0].verts_norm_holes[0][0][1] - 0.08) < 1e-12);
+  assert.ok(Math.abs(fwd.shapes[1].verts_norm[0][0] - 0.15) < 1e-12);
+  assert.ok(Math.abs(fwd.shapes[1].verts_norm[0][1] - 0.08) < 1e-12);
+  assert.deepEqual(fwd.shapes[1].origin.parent_prev.verts_norm[0], [0.05, -0.02]);
+  assert.deepEqual(fwd.shapes[0].computed, { area_sf: 62.5 });
+  assert.deepEqual(fwd.shapes[1].computed, { area_sf: 1.5 });
+  assert.ok(fwd.shapes.every((shape: any) => shape.updated_at), "the one movement stamps every affected record");
+
+  const undone = applyShapeCommand(fwd.shapes, fwd.inverse);
+  assert.deepEqual(undone.shapes, before, "one undo restores the complete group byte-for-byte");
+  const redone = applyShapeCommand(undone.shapes, undone.inverse);
+  assert.deepEqual(redone.shapes, fwd.shapes, "redo restores the same stamped group without re-stamping");
 });
 
 // ── add ──────────────────────────────────────────────────────────────────────

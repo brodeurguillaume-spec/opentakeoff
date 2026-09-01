@@ -110,6 +110,7 @@ export function mergeTakeoffImport(current, imported, knownFiles = null) {
       ...(arr(imported.sheet_tabs).length ? {} : { sheet_tabs: arr(cur.sheet_tabs) }),
       ...(typeof imported.active_sheet === "string" ? {} : { active_sheet: cur.active_sheet || null }),
       ...(arr(imported.sheet_group).length ? {} : { sheet_group: arr(cur.sheet_group) }),
+      ...(arr(imported.sheet_group).length || cur.sheet_group_layout !== "column" ? {} : { sheet_group_layout: "column" }),
       ...(arr(imported.last_group).length ? {} : { last_group: arr(cur.last_group) }),
     };
     return {

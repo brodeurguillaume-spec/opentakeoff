@@ -12,11 +12,14 @@
 // record (surface height / linear thickness defaults).
 import { closedMetrics, openLen, polyWithHolesMetrics } from "./geometry.js";
 import { flattenCurve } from "./curve.js";
+import { linearCountMetrics } from "./linearCount.js";
 
+/** @returns {Record<string, number>} */
 export function computeShapeMetrics(s, dims, upp, cond) {
   const pts = (s.verts_norm || []).map(([nx, ny]) => [nx * dims.w, ny * dims.h]);
   const u = upp || 0;
   if (s.measure_role === "count") return { count: 1 };
+  if (s.measure_role === "count_run") return linearCountMetrics(pts, u, s.count_run || {});
   if (s.measure_role === "surface_area") {
     // the wall keeps the height it was DRAWN at; the condition H is only the
     // default for new traces (and the fallback for legacy shapes without one).
@@ -52,6 +55,7 @@ export function needsMetrics(s) {
   const n = s.verts_norm?.length || 0;
   switch (s.measure_role) {
     case "count": return c.count == null;
+    case "count_run": return (c.count == null || c.guide_lf == null) && n >= 2;
     case "floor_area":
     case "deduct": return c.area_sf == null && n >= 3;
     case "surface_area": return c.area_sf == null && n >= 2;

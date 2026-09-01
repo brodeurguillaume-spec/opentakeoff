@@ -131,7 +131,7 @@ test("diffToCsv carries statuses, deltas, sections, and escapes commas", () => {
     takeoff([cond({ finish_tag: 'CPT,1 "x"' })], [shape({ computed: { area_sf: 150 } })]),
   );
   const csv = diffToCsv(d, { aName: "Rev 1", bName: "current", projectName: "Job" });
-  assert.match(csv, /revision compare/);
+  assert.match(csv, /comparaison de révisions AnvilTrace/);
   assert.match(csv, /"CPT,1 ""x""",changed/);
   assert.match(csv, /TOTAL/);
   assert.match(csv, /Sheet,Status/);
@@ -140,6 +140,6 @@ test("diffToCsv carries statuses, deltas, sections, and escapes commas", () => {
 test("metric CSV converts areas and lengths", () => {
   const d = diffTakeoffs(takeoff([cond()], []), takeoff([cond()], [shape()]));
   const csv = diffToCsv(d, { units: "metric" });
-  assert.match(csv, /d Floor m2/);
+  assert.match(csv, /d Surface m2/);
   assert.match(csv, /9\.29/);
 });

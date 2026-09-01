@@ -10,7 +10,15 @@ import {
   splitMergedArcs, doorLeafCells, arcClusterFit,
   type Point, type MaskObj,
 } from "../src/lib/oneclick.ts";
-import { cloudBezier, cloudPath, arrowheadPath, reflectVertsNorm, closedMetrics } from "../src/lib/geometry.js";
+import { cloudBezier, cloudPath, arrowheadPath, reflectVertsNorm, closedMetrics, shapeContourHit } from "../src/lib/geometry.js";
+
+test("shapeContourHit sees only the drawn outline, including count polygons and holes", () => {
+  const count = { measure_role: "count", verts_norm: [[0.1, 0.1], [0.3, 0.1], [0.3, 0.3], [0.1, 0.3]] };
+  assert.ok(shapeContourHit(count, 20, 10, 100, 100, 2), "count footprint outline is selectable");
+  assert.equal(shapeContourHit(count, 20, 20, 100, 100, 2), null, "filled interior is not a contour hit");
+  const parent = { ...count, measure_role: "floor_area", verts_norm_holes: [[[0.15, 0.15], [0.25, 0.15], [0.25, 0.25], [0.15, 0.25]]] };
+  assert.equal(shapeContourHit(parent, 20, 15, 100, 100, 2)?.ring, "hole");
+});
 
 // a closed square room, as flat boundary segments in image px
 function squareSegs(x0: number, y0: number, x1: number, y1: number): number[] {

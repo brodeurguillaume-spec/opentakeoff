@@ -5,7 +5,7 @@
 //   deduct        → subtracts from floor SF
 //   surface_area  → adds to wall SF (a wall trace: LF × height) — never base LF
 //   linear        → adds to LF, and (if the condition has thickness) border SF
-//   count         → adds to EA
+//   count/count_run → adds to EA
 //   multiplier    → × N identical units, applied to every quantity
 //   waste_pct     → a flooring allowance added on top (SF + LF; never EA)
 //
@@ -24,6 +24,7 @@ import { GETTERS, CSV_PROFILE, colGetter, floorPerimeterLf, applyUnits, METRIC_C
 import { M_PER_FT, M2_PER_SF } from "./units";
 import { attrValue } from "./conditionColumns.js";
 import { shapeLabelValue } from "./shapeLabels.js";
+import { mapRegionForShape } from "./mapZones.js";
 import { compareSheetKeys } from "./sheetKey"; // NOT ./sheets — that module imports pdfjs-dist
 
 // Re-export so existing consumers (markedset, snapshotDiff, ReportPanel, tests)
@@ -49,6 +50,7 @@ function accumulateRole(acc, s) {
     case "surface_area": acc.wall += cp.area_sf || 0; break;
     case "linear": acc.lf += cp.perimeter_lf || 0; acc.border += cp.area_sf || 0; break;
     case "count": acc.ea += cp.count || 1; break;
+    case "count_run": acc.ea += cp.count || 0; break;
     default: break;
   }
 }
@@ -231,6 +233,36 @@ export function labelGroupedRows(conditions, shapes, shapeLabels = [], ctx = nul
   }).filter((g) => g.rows.length);
 }
 
+// Project Map grouping keeps spatial truth out of condition attrs. Each shape
+// is conservatively assigned to the smallest confirmed semantic zone that
+// fully encloses it; crossing/proposed/unmapped geometry stays in one explicit
+// Unmapped bucket instead of being guessed into a takeoff section.
+export function mapZoneGroupedRows(conditions, shapes, regions = [], ctx = null) {
+  const buckets = new Map();
+  for (const shape of shapes) {
+    const region = mapRegionForShape(shape, regions);
+    const key = region?.id || "";
+    if (!buckets.has(key)) buckets.set(key, { region, shapes: [] });
+    buckets.get(key).shapes.push(shape);
+  }
+  const rank = new Map(regions.map((region, index) => [region.id, index]));
+  return [...buckets.values()]
+    .sort((a, b) => {
+      if (!a.region) return 1;
+      if (!b.region) return -1;
+      return (rank.get(a.region.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.region.id) ?? Number.MAX_SAFE_INTEGER);
+    })
+    .map(({ region, shapes: bucketShapes }) => ({
+      value: region?.id || null,
+      label: region?.name || "Unmapped",
+      sheet_id: region?.sheet_id || null,
+      region,
+      rows: conditionTotals(conditions, bucketShapes, ctx).filter((row) => row.shape_count > 0),
+      perimByCond: floorPerimeterLf(bucketShapes),
+    }))
+    .filter((group) => group.rows.length);
+}
+
 // Sheet × label grouping — the FLOOR × ROOM cross-section, and the shape an
 // estimator actually hands a superintendent: what goes down in room 112 on the
 // second floor, not what goes down in room 112 anywhere in the building.
@@ -360,7 +392,7 @@ export function grandTotals(rows) {
  *   (SF/LF-based). "imperial" (default) is byte-identical to the frozen export.
  * @returns {string}
  */
-export function totalsToCsv(rows, projectName = "", bySheet = null, sheetLabel = null, cols = null, ctx = null, byLabel = null, brandName = "OpenTakeoff", units = "imperial") {
+export function totalsToCsv(rows, projectName = "", bySheet = null, sheetLabel = null, cols = null, ctx = null, byLabel = null, brandName = "AnvilTrace", units = "imperial") {
   // the caller passes RAW descriptors; conversion happens here (one site per
   // output) through the same applyUnits seam the report table uses
   const columns = applyUnits(cols || CSV_PROFILE.filter((c) => c.defaultVisible), units, METRIC_CSV_LABELS);
@@ -405,7 +437,7 @@ export function totalsToCsv(rows, projectName = "", bySheet = null, sheetLabel =
   // because display labels are session-volatile.
   if (bySheet && bySheet.length) {
     lines.push("");
-    lines.push(["Sheet", "Sheet ID", "Finish", `Floor ${AU}`, `Wall ${AU}`, `Border ${AU}`, LU, "EA"].map(esc).join(","));
+    lines.push(["Sheet", "Sheet ID", "Finish", `Surface ${AU}`, `Wall ${AU}`, `Border ${AU}`, LU, "EA"].map(esc).join(","));
     for (const g of bySheet) {
       const label = sheetLabel ? sheetLabel(g.sheet_id) : g.sheet_id;
       for (const row of g.rows) {
@@ -424,7 +456,7 @@ export function totalsToCsv(rows, projectName = "", bySheet = null, sheetLabel =
   // CSV stays byte-identical.
   if (byLabel && byLabel.length) {
     lines.push("");
-    lines.push(["Label", "Finish", `Floor ${AU}`, `Wall ${AU}`, `Border ${AU}`, LU, "EA"].map(esc).join(","));
+    lines.push(["Label", "Finish", `Surface ${AU}`, `Wall ${AU}`, `Border ${AU}`, LU, "EA"].map(esc).join(","));
     for (const g of byLabel) {
       const name = g.value || "Unlabeled";
       for (const row of g.rows) lines.push([name, row.finish_tag, A(row.floor_sf), A(row.wall_sf), A(row.border_sf), L(row.lf), row.ea].map(esc).join(","));
@@ -465,7 +497,7 @@ export function reportJson({ projectName = "", rows = [], bySheet = [], scaleInf
   return {
     schema: "opentakeoff.report.v1",
     project_name: projectName || null,
-    generated_with: "OpenTakeoff",
+    generated_with: "AnvilTrace",
     // scale_confirmed (scale gate): false = an agent set this sheet's scale and
     // no human confirmed it — the report's consumer should treat those sheets'
     // quantities as standing on an unverified number. Absent input = true

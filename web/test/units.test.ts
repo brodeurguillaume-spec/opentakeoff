@@ -45,12 +45,12 @@ test("metric CSV converts measured columns and drops SY", () => {
     total_sf_net: 1000, lf_net: 100, sy_net: 111.1, materials: [],
   }];
   const metric = totalsToCsv(rows, "P", null, null, null, null, null, "OpenTakeoff", "metric");
-  assert.match(metric, /Floor m2/);
+  assert.match(metric, /Surface m2/);
   assert.match(metric, /92\.9/);      // 1000 SF → 92.9 m²
   assert.match(metric, /30\.48/);     // 100 LF → 30.48 m
   assert.doesNotMatch(metric, /SY/);
   const imperial = totalsToCsv(rows, "P");
-  assert.match(imperial, /Floor SF/);
+  assert.match(imperial, /Surface SF/);
   assert.match(imperial, /SY w\/Waste/);
 });
 
@@ -78,6 +78,8 @@ test("dimLabel is the WinAnsi-safe sibling of ftIn: ASCII feet-inches, meters in
 
 test("fmtCheckLen: ft-in imperial, meters metric", () => {
   assert.equal(fmtCheckLen(12.5, "imperial"), "12′ 6″");
+  assert.equal(fmtCheckLen(12 + 6.5 / 12, "imperial", 2), "12′ 6-1/2″");
+  assert.equal(fmtCheckLen(12 + 11.8 / 12, "imperial", 2), "13′ 0″");
   assert.equal(fmtCheckLen(10, "metric"), "3.05 m");
 });
 

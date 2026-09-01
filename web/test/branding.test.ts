@@ -13,13 +13,13 @@ const PROFILES = [
   { id: "b", name: "Fin Workspaces", address: "2 B St" },
 ];
 
-test("default mode → OpenTakeoff, no company, no credit, prefixed cover title", () => {
+test("default mode → AnvilTrace, no company, no credit, prefixed French cover title", () => {
   const b = resolveBranding({ mode: "default", profileId: "a", profiles: PROFILES });
   assert.equal(b.clear, false);
   assert.equal(b.company, null);
   assert.equal(b.brandName, OT_NAME);
   assert.equal(b.credit, null);
-  assert.equal(b.coverTitle, "OpenTakeoff · Marked Set");
+  assert.equal(b.coverTitle, "AnvilTrace · Jeu de plans annoté");
 });
 
 test("clear-label with a valid profile → that trade name brands the doc", () => {
@@ -28,7 +28,7 @@ test("clear-label with a valid profile → that trade name brands the doc", () =
   assert.deepEqual(b.company, { name: "Fin Workspaces", address: "2 B St", logo: undefined });
   assert.equal(b.brandName, "Fin Workspaces");
   assert.equal(b.credit, OT_CREDIT);
-  assert.equal(b.coverTitle, "Marked Set");
+  assert.equal(b.coverTitle, "Jeu de plans annoté");
 });
 
 test("clear-label carries the logo when the profile has one", () => {
@@ -40,7 +40,7 @@ test("clear-label with no profiles falls back to default (nothing to brand as)",
   const b = resolveBranding({ mode: "clearlabel", profileId: "a", profiles: [] });
   assert.equal(b.clear, false);
   assert.equal(b.brandName, OT_NAME);
-  assert.equal(b.coverTitle, "OpenTakeoff · Marked Set");
+  assert.equal(b.coverTitle, "AnvilTrace · Jeu de plans annoté");
 });
 
 test("clear-label with a stale profileId falls back to the first profile", () => {
@@ -49,7 +49,7 @@ test("clear-label with a stale profileId falls back to the first profile", () =>
   assert.equal(b.brandName, "345 Flooring");
 });
 
-test("clear-label profile without a name → brandName degrades to OpenTakeoff, company kept", () => {
+test("clear-label profile without a name → brandName degrades to AnvilTrace, company kept", () => {
   const b = resolveBranding({ mode: "clearlabel", profileId: "c", profiles: [{ id: "c", logo: "data:x" }] });
   assert.equal(b.clear, true);
   assert.equal(b.brandName, OT_NAME);
@@ -63,12 +63,12 @@ test("garbage / missing mode → default", () => {
 });
 
 // export titles follow the brand name (decision: exports follow the mode) — the
-// resolver hands brandName to each CSV, defaulting to OpenTakeoff when unbranded
-test("CSV export titles carry the brand name (default OpenTakeoff)", () => {
-  assert.match(totalsToCsv([], "Proj"), /^# Proj — OpenTakeoff report/);
+// resolver hands brandName to each CSV, defaulting to AnvilTrace when unbranded
+test("CSV export titles carry the brand name (default AnvilTrace)", () => {
+  assert.match(totalsToCsv([], "Proj"), /^# Proj — AnvilTrace report/);
   assert.match(totalsToCsv([], "Proj", null, null, null, null, null, "345 Flooring"), /^# Proj — 345 Flooring report/);
-  assert.match(shapesToCsv([], "Proj"), /^# Proj — OpenTakeoff shapes/);
+  assert.match(shapesToCsv([], "Proj"), /^# Proj — AnvilTrace shapes/);
   assert.match(shapesToCsv([], "Proj", "345 Flooring"), /^# Proj — 345 Flooring shapes/);
-  assert.match(rfisToCsv([], [], "Proj"), /^# Proj — OpenTakeoff RFI log/);
+  assert.match(rfisToCsv([], [], "Proj"), /^# Proj — AnvilTrace RFI log/);
   assert.match(rfisToCsv([], [], "Proj", null, "345 Flooring"), /^# Proj — 345 Flooring RFI log/);
 });

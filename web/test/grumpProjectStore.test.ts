@@ -211,6 +211,37 @@ test("plan hydration pushes browser-only PDFs and restores disk-only PDFs", asyn
   assert.deepEqual(uploads, ["local.pdf"]);
 });
 
+test("large PDF import reads the File once and reuses the bytes for both stores", async () => {
+  let fileReads = 0;
+  let cached: Uint8Array | null = null;
+  let mirrored: Uint8Array | null = null;
+  const base: any = {
+    addPdfBytes: async (_name: string, bytes: Uint8Array) => {
+      cached = new Uint8Array(bytes);
+      return { name: "large.pdf", rev: 1 };
+    },
+  };
+  const fetchLike: any = async (url: string, init: any = {}) => {
+    if (url.endsWith("large.pdf") && init.method === "PUT") {
+      mirrored = new Uint8Array(init.body);
+      return response({ name: "large.pdf" });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  };
+  const store = createGrumpProjectStore(base, "bid-42", fetchLike);
+  const file = {
+    name: "large.pdf",
+    type: "application/pdf",
+    arrayBuffer: async () => { fileReads += 1; return new Uint8Array([37, 80, 68, 70]).buffer; },
+  } as any;
+
+  await store.addPdf(file);
+
+  assert.equal(fileReads, 1);
+  assert.deepEqual([...cached!], [37, 80, 68, 70]);
+  assert.deepEqual([...mirrored!], [37, 80, 68, 70]);
+});
+
 test("GRUMP sheet registry exposes the current browser PDF hash and revision", async () => {
   const digest = "a".repeat(64);
   const base: any = {

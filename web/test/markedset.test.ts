@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 // build loads under node (with a "use the legacy build" warning) —
 // buildMarkedSetPdf itself stays untested here (pdf-lib + DOM bound), only
 // the pure sanitizer.
-import { winAnsiSafe } from "../src/lib/markedset.js";
+import { winAnsiSafe, wrapPdfLines } from "../src/lib/markedset.js";
 
 test("printable ASCII and Latin-1 pass through untouched", () => {
   const s = "CT-1, honed · 546.9 SF ×2 -> 1/4\" = 1'-0\"";
@@ -46,4 +46,14 @@ test("nullish input yields the empty string; control chars are replaced", () => 
   assert.equal(winAnsiSafe(null), "");
   assert.equal(winAnsiSafe(undefined), "");
   assert.equal(winAnsiSafe("a\tb\nc"), "a?b?c");          // drawn strings are single-line by construction
+});
+
+test("cover titles wrap within the reserved identity lane", () => {
+  const mono = { widthOfTextAtSize: (text: string, size: number) => text.length * size };
+  assert.deepEqual(wrapPdfLines("GIV338 Habitation LMC", 1, mono, 14, 2), ["GIV338", "Habitation LMC"]);
+});
+
+test("an unbroken title is safely split and ellipsized at the line limit", () => {
+  const mono = { widthOfTextAtSize: (text: string, size: number) => text.length * size };
+  assert.deepEqual(wrapPdfLines("ABCDEFGHIJK", 1, mono, 5, 2), ["ABCDE", "FGHI…"]);
 });

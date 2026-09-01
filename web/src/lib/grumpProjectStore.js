@@ -229,8 +229,14 @@ export function createGrumpProjectStore(
       return base.loadPdfData(name);
     },
     async addPdf(file) {
-      const result = await base.addPdf(file);
-      await putPlan(file.name, new Uint8Array(await file.arrayBuffer()));
+      // One file-sized read, shared by IndexedDB and the durable project
+      // mirror. This matters on 300+ MB construction sets: the previous path
+      // materialized the File twice before pdf.js even started rendering.
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const result = typeof base.addPdfBytes === "function"
+        ? await base.addPdfBytes(file.name, bytes)
+        : await base.addPdf(new File([bytes], file.name, { type: file.type || "application/pdf" }));
+      await putPlan(file.name, bytes);
       return result;
     },
     async removePdf(name) {

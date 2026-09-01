@@ -73,19 +73,23 @@ export function dimInputStr(
 }
 
 /** Feet → drawing-style feet-and-inches: 12.51 → "12′ 6″". Rounds to the
- *  nearest inch; 12″ rolls up to the next foot. */
-export function ftIn(feet: number): string {
+ *  requested fraction of an inch (whole inches by default); 12″ rolls up. */
+export function ftIn(feet: number, inchDenominator = 1): string {
   if (!Number.isFinite(feet)) return "";
   const sign = feet < 0 ? "-" : "";
   let ft = Math.floor(Math.abs(feet) + 1e-9);
-  let inch = Math.round((Math.abs(feet) - ft) * 12);
-  if (inch === 12) { ft += 1; inch = 0; }
-  return `${sign}${ft}′ ${inch}″`;
+  const den = Math.max(1, Math.round(inchDenominator) || 1);
+  let inchUnits = Math.round((Math.abs(feet) - ft) * 12 * den);
+  if (inchUnits === 12 * den) { ft += 1; inchUnits = 0; }
+  const whole = Math.floor(inchUnits / den);
+  const rem = inchUnits % den;
+  const fraction = rem ? `${rem}/${den}` : "";
+  return `${sign}${ft}′ ${whole}${fraction ? `-${fraction}` : ""}″`;
 }
 
 /** length readout for the check tool: ft-in in imperial, meters in metric */
-export const fmtCheckLen = (feet: number, units: UnitSystem): string =>
-  units === "metric" ? `${(feet * M_PER_FT).toFixed(2)} m` : ftIn(feet);
+export const fmtCheckLen = (feet: number, units: UnitSystem, inchDenominator = 1): string =>
+  units === "metric" ? `${(feet * M_PER_FT).toFixed(2)} m` : ftIn(feet, inchDenominator);
 
 /** Dimension-annotation label: ASCII feet-and-inches (12.51 → `12'-6"`) so it
  *  survives WinAnsi PDF embedding — ftIn's ′/″ sit outside cp1252 and would

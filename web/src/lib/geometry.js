@@ -217,8 +217,12 @@ export function distToSeg(px, py, ax, ay, bx, by) {
 // when the shape carries no holes.
 export function hitShape(shape, x, y, w, h, thr) {
   const pts = shape.verts_norm.map(([nx, ny]) => [nx * w, ny * h]);
-  if (shape.measure_role === "count") return Math.hypot(pts[0][0] - x, pts[0][1] - y) < thr * 2;
-  if (shape.measure_role === "linear" || shape.measure_role === "surface_area") { for (let i = 1; i < pts.length; i++) if (distToSeg(x, y, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) < thr) return true; return false; }
+  // Legacy counts are one-point pins. New counts may carry a project-persisted
+  // polygon footprint (a 1' square by default, or a human-shaped symbol). They
+  // still total as one EA; only their pick/render geometry changes.
+  if (shape.measure_role === "count" && pts.length === 1) return Math.hypot(pts[0][0] - x, pts[0][1] - y) < thr * 2;
+  if (shape.measure_role === "count" && pts.length === 2) return distToSeg(x, y, pts[0][0], pts[0][1], pts[1][0], pts[1][1]) < thr;
+  if (shape.measure_role === "linear" || shape.measure_role === "surface_area" || shape.measure_role === "count_run") { for (let i = 1; i < pts.length; i++) if (distToSeg(x, y, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) < thr) return true; return false; }
   const holes = (shape.verts_norm_holes || []).map((ring) => ring.map(([nx, ny]) => [nx * w, ny * h]));
   if (pointInPoly(x, y, pts) && !holes.some((hpts) => pointInPoly(x, y, hpts))) return true;
   for (let i = 0; i < pts.length; i++) { const j = (i + 1) % pts.length; if (distToSeg(x, y, pts[i][0], pts[i][1], pts[j][0], pts[j][1]) < thr) return true; }
@@ -226,6 +230,36 @@ export function hitShape(shape, x, y, w, h, thr) {
     for (let i = 0; i < hpts.length; i++) { const j = (i + 1) % hpts.length; if (distToSeg(x, y, hpts[i][0], hpts[i][1], hpts[j][0], hpts[j][1]) < thr) return true; }
   }
   return false;
+}
+
+// Distance from a pointer to a shape's nearest DRAWN contour. Unlike hitShape,
+// this never treats the interior fill as a hit. The canvas uses it for the
+// deliberate-contour rule: exactly one logical outline under the pointer beats
+// broad fill/z-order picking; intersections fall back to the ordinary picker.
+// `ring` lets linked cutouts collapse their red outline and their parent's hole
+// stroke into one logical boundary instead of looking ambiguous forever.
+export function shapeContourHit(shape, x, y, w, h, thr) {
+  const pts = (shape.verts_norm || []).map(([nx, ny]) => [nx * w, ny * h]);
+  if (!pts.length) return null;
+  if (shape.measure_role === "count" && pts.length === 1) {
+    const distance = Math.hypot(pts[0][0] - x, pts[0][1] - y);
+    return distance < thr * 2 ? { distance, ring: "point", ringIndex: -1 } : null;
+  }
+  const open = shape.measure_role === "linear" || shape.measure_role === "surface_area" || shape.measure_role === "count_run" || (shape.measure_role === "count" && pts.length === 2);
+  let best = null;
+  const scan = (ringPts, ring, ringIndex, closed) => {
+    const n = closed ? ringPts.length : ringPts.length - 1;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % ringPts.length;
+      const distance = distToSeg(x, y, ringPts[i][0], ringPts[i][1], ringPts[j][0], ringPts[j][1]);
+      if (distance < thr && (!best || distance < best.distance)) best = { distance, ring, ringIndex };
+    }
+  };
+  scan(pts, "outer", -1, !open);
+  for (let k = 0; k < (shape.verts_norm_holes || []).length; k++) {
+    scan(shape.verts_norm_holes[k].map(([nx, ny]) => [nx * w, ny * h]), "hole", k, true);
+  }
+  return best;
 }
 
 // ── freehand highlighter geometry (byte-identical with Spline's canvas copy) ──

@@ -13,7 +13,6 @@ import { PALETTE } from "../components/hatches.jsx";
 import {
   MIN_SCALE, MAX_SCALE,
   QUALITY_CEILING, MAX_CANVAS_DIM, MAX_PANEL_AREA,
-  FLOORING_DEFAULTS,
 } from "./canvasConstants.js";
 
 // Largest pdf.js render scale a wPt×hPt-point page can use within the base budget;
@@ -61,6 +60,12 @@ export const instantiateTemplate = (t) => ({
   hatch: t.hatch || "solid", multiplier: 1, waste_pct: Number(t.waste_pct) || 0,
   ...(t.height_ft != null ? { height_ft: t.height_ft } : {}),
   ...(t.thickness_in != null ? { thickness_in: t.thickness_in } : {}),
+  ...(t.length_in != null ? { length_in: t.length_in } : {}),
+  ...(t.count_footprint ? { count_footprint: { offsets_ft: t.count_footprint.offsets_ft?.map((p) => [...p]) } } : {}),
+  ...(t.count_tag != null ? { count_tag: t.count_tag } : {}),
+  ...(t.count_joint_in != null ? { count_joint_in: t.count_joint_in } : {}),
+  ...(t.fill_opacity != null ? { fill_opacity: t.fill_opacity } : {}),
+  ...(t.line_width_px != null ? { line_width_px: t.line_width_px } : {}),
   ...(t.laborType != null ? { laborType: t.laborType } : {}),
   ...(t.subfloorType != null ? { subfloorType: t.subfloorType } : {}),
   ...(t.roll_setup ? { roll_setup: { ...t.roll_setup } } : {}),   // #136 — deep-copied like grout: a template's roll spec must never be shared by reference
@@ -69,7 +74,10 @@ export const instantiateTemplate = (t) => ({
   // into every fresh-workspace condition across every project in the session
   materials: (t.materials || []).map((m) => instantiateMaterial(m, uid("mat"))),
 });
-// Fresh-workspace seeding reads the user's template library first; the
-// built-in flooring defaults are only the empty-library fallback. Both paths
-// run instantiateTemplate — ONE condition constructor, no drift.
-export const seedConditions = (library) => (library?.length ? library : FLOORING_DEFAULTS).map(instantiateTemplate);
+// A fresh project starts empty. Libraries remain explicit operator choices:
+// merely owning browser-global templates must never silently populate a new
+// project, and the old flooring starter set is no longer suitable for a
+// general-construction workspace. Keep the parameter for call-site/backward
+// compatibility while the UI migrates; applying a template still routes
+// through instantiateTemplate at the explicit Apply action.
+export const seedConditions = (_library) => [];

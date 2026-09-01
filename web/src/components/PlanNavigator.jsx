@@ -22,10 +22,11 @@ import { Link, useNavigate } from "react-router";
 import { Icon } from "../brand/icons.jsx";
 import AuthChip from "./AuthChip.jsx";
 import { useGoogleAuth } from "../lib/google/AuthContext.jsx";
-import { parseSheetKey, extractSheetNumber, detectScale, RENDER_SCALE, MAX_GROUP } from "../lib/sheets";
+import { parseSheetKey, extractSheetNumber, detectScale, RENDER_SCALE, MAX_GROUP, MAX_STACK } from "../lib/sheets";
 import { isGoogleConfigured } from "../lib/google/auth.js";
 import { projectHomeFolderId } from "../lib/projectHome.js";
 import { groupSheetsByLevel, sortGalleryGroups } from "../lib/sheetLevels.js";
+import { normalizeQuarterTurn, SHEET_TITLE_MAX } from "../lib/sheetPresentation.js";
 
 const THUMB_W = 380;
 const ROOT = { id: undefined, name: "Project" };   // id undefined → cloudStore's default (project folder)
@@ -50,7 +51,7 @@ export default function PlanNavigator({
   // presentation + exit
   canClose, onExit, initialMode = "plan", cloudMode,
   // plan-set (gallery) data
-  sheets, getDoc, scales, detectedScales, scaleUnconfirmed = {}, shapes, labels, onLabel, onDetect,
+  sheets, getDoc, scales, detectedScales, scaleUnconfirmed = {}, shapes, labels, titles = {}, rotations = {}, onLabel, onDetect, onRename, onRotate,
   thumbCacheRef, busyRef, openTabs, onOpen,
   onAddFiles, onClosePdf, onRemoveFromProject,
   onCloseProject, onBrowseProjects,
@@ -78,7 +79,12 @@ export default function PlanNavigator({
   const escRef = useRef(() => {});
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === "Escape") { e.stopPropagation(); escRef.current(); return; }
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        if (renamingRef.current) setRenaming(null);
+        else escRef.current();
+        return;
+      }
       const tag = e.target?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       // "?" is app-level help, not a canvas tool shortcut, so it is not ours to
@@ -141,30 +147,21 @@ export default function PlanNavigator({
   const fileRef = useRef(null);
   const [pages, setPages] = useState({});   // file -> numPages (as discovered)
   const [sel, setSel] = useState([]);
-  const [sampleBusy, setSampleBusy] = useState(false);
   const [driveBusy, setDriveBusy] = useState(false);
   const [driveErr, setDriveErr] = useState("");
   const [addMenu, setAddMenu] = useState(false);
   const [confirmClose, setConfirmClose] = useState(null);   // { file, shapeCount } | null
+  const [renaming, setRenaming] = useState(null);           // { key, value, error } | null
+  const [actionMsg, setActionMsg] = useState("");
   const [, bump] = useState(0);
   const seqRef = useRef(0);
   const queueRef = useRef([]);
   const pumpingRef = useRef(false);
   const obsRef = useRef(null);
-
-  const loadSample = async () => {
-    if (sampleBusy || !onAddFiles) return;
-    setSampleBusy(true);
-    try {
-      const base = import.meta.env.BASE_URL || "/";
-      const res = await fetch(`${base}demo/sample-finish-plan.pdf`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const blob = await res.blob();
-      onAddFiles([new File([blob], "sample-finish-plan.pdf", { type: "application/pdf" })]);
-    } catch {
-      setSampleBusy(false);
-    }
-  };
+  const rotationsRef = useRef(rotations);
+  rotationsRef.current = rotations;
+  const renamingRef = useRef(false);
+  renamingRef.current = Boolean(renaming);
 
   const handleDriveSignIn = () => {
     if (driveBusy) return;
@@ -223,8 +220,9 @@ export default function PlanNavigator({
         const pdf = await getDoc(file);
         const pg = await pdf.getPage(page);
         if (seq !== seqRef.current) break;
-        const vp1 = pg.getViewport({ scale: 1 });
-        const vp = pg.getViewport({ scale: THUMB_W / vp1.width });
+        const rotation = normalizeQuarterTurn((pg.rotate || 0) + (rotationsRef.current[key] || 0));
+        const vp1 = pg.getViewport({ scale: 1, rotation });
+        const vp = pg.getViewport({ scale: THUMB_W / vp1.width, rotation });
         const c = document.createElement("canvas");
         c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
         await pg.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
@@ -232,7 +230,7 @@ export default function PlanNavigator({
         bump((n) => n + 1);
         if (!labels[key] || !detectedScales[key]) {
           const tc = await pg.getTextContent();
-          const vpL = pg.getViewport({ scale: RENDER_SCALE });
+          const vpL = pg.getViewport({ scale: RENDER_SCALE, rotation });
           const lbl = extractSheetNumber(tc, vpL);
           if (lbl) onLabel(key, lbl);
           const det = detectScale(tc, vpL);
@@ -261,6 +259,7 @@ export default function PlanNavigator({
   const shapeCount = (key) => shapes.reduce((n, s) => n + (s.sheet_id === key ? 1 : 0), 0);
   const pdfShapeCount = (file) => shapes.reduce((n, s) => n + (parseSheetKey(s.sheet_id).file === file ? 1 : 0), 0);
   const labelOf = (key) => {
+    if (titles[key]) return titles[key];
     if (labels[key]) return labels[key];
     const t = parseSheetKey(key);
     const base = t.file.replace(/\.pdf$/i, "");
@@ -277,6 +276,23 @@ export default function PlanNavigator({
     if (label === null) return;
     onAssignLevel?.(sel, label.trim());
     setSel([]);
+  };
+  const startRename = (key) => setRenaming({ key, value: labelOf(key), error: "" });
+  const saveRename = () => {
+    if (!renaming) return;
+    const value = renaming.value.trim().replace(/\s+/g, " ");
+    if (!value) { setRenaming((r) => ({ ...r, error: "Enter a page name." })); return; }
+    if (value.length > SHEET_TITLE_MAX) { setRenaming((r) => ({ ...r, error: `Maximum ${SHEET_TITLE_MAX} characters.` })); return; }
+    const result = onRename?.(renaming.key, value);
+    if (result?.error) { setRenaming((r) => ({ ...r, error: result.error })); return; }
+    setActionMsg(`Renamed “${value}”.`);
+    setRenaming(null);
+  };
+  const rotateSelection = (direction) => {
+    if (!sel.length || !onRotate) return;
+    const result = onRotate(sel, direction);
+    if (result?.error) { setActionMsg(result.error); return; }
+    setActionMsg(`${sel.length} sheet${sel.length === 1 ? "" : "s"} rotated.`);
   };
 
   // ── mode-aware back/up ──────────────────────────────────────────────────
@@ -509,6 +525,10 @@ export default function PlanNavigator({
                     <button onClick={(e) => { e.stopPropagation(); requestClose(parsed.file); }} title={cloudMode ? "Close this PDF — unload it from the plan set (it stays in Drive)" : "Close this PDF — remove it from the plan set (local plans aren't stored elsewhere)"}
                       style={{ padding: "5px 8px", border: "none", background: "var(--paper-bright)", color: "var(--ink-muted)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 11, boxShadow: "var(--shadow-1)" }}>✕</button>
                   )}
+                  {onRename && (
+                    <button onClick={(e) => { e.stopPropagation(); startRename(key); }} title="Rename this page without changing its PDF file"
+                      style={{ padding: "5px 9px", border: "none", background: "var(--paper-bright)", color: "var(--ink)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 10 }}>Rename</button>
+                  )}
                   <button onClick={(e) => { e.stopPropagation(); onOpen([key], false); }} title="Open just this sheet"
                     style={{ padding: "5px 12px", border: "none", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase" }}>View</button>
                 </div>
@@ -518,8 +538,9 @@ export default function PlanNavigator({
                     : <div className="skeleton" style={{ width: "86%", height: "78%" }} />}
                 </div>
                 <div style={{ padding: "8px 10px", display: "flex", alignItems: "baseline", gap: 8 }}>
-                  <strong style={{ fontFamily: "var(--f-mono)", fontSize: 12.5, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }} title={key}>{labelOf(key)}</strong>
+                  <strong style={{ fontFamily: "var(--f-mono)", fontSize: 12.5, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }} title={`${labelOf(key)} · ${key}`}>{labelOf(key)}</strong>
                   {levels[key] && <span title="Level" style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", color: "var(--ink-muted)", border: "1px solid var(--ink-faint)", padding: "1px 5px" }}>{levels[key]}</span>}
+                  {!!rotations[key] && <span title="Saved page rotation" style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", color: "var(--cobalt)", border: "1px solid var(--ink-faint)", padding: "1px 5px" }}>{rotations[key]}°</span>}
                   {isOpenTab && <span title="Already open as a tab" style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", color: "var(--cobalt)", textTransform: "uppercase", letterSpacing: "0.08em" }}>open</span>}
                   {cnt > 0 && <span style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, color: "var(--ink-muted)" }}>{cnt}▦</span>}
                   <span style={{ fontSize: 10, fontWeight: 600, whiteSpace: "nowrap", color: scales[key] ? (scaleUnconfirmed[key] === false ? "var(--c-warning)" : "var(--c-positive)") : detectedScales[key] ? "var(--c-warning)" : "var(--c-danger)" }}
@@ -563,18 +584,7 @@ export default function PlanNavigator({
                     )}
                   </div>
                 )}
-                <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "18px auto 16px", color: "var(--text-faint)", fontFamily: "var(--f-mono)", fontSize: 10.5, letterSpacing: "0.14em", textTransform: "uppercase" }}>
-                  <span style={{ flex: 1, height: 1, background: "var(--ink-faint)" }} />new here?<span style={{ flex: 1, height: 1, background: "var(--ink-faint)" }} />
-                </div>
-                <button onClick={loadSample} disabled={sampleBusy} title="Open a real floor finish plan and try a takeoff"
-                  style={{ display: "inline-flex", alignItems: "center", gap: 9, padding: "13px 22px", border: "1px solid var(--ink)", background: "var(--cobalt)", color: "var(--paper-bright)", cursor: sampleBusy ? "default" : "pointer", opacity: sampleBusy ? 0.65 : 1, fontWeight: 700, fontSize: 14, fontFamily: "var(--f-body)" }}>
-                  <Icon name="takeoff" size={16} />{sampleBusy ? "Loading sample…" : "Load sample plan"}
-                </button>
-                <div style={{ fontFamily: "var(--f-body)", fontSize: 12.5, color: "var(--ink-muted)", marginTop: 11, lineHeight: 1.6 }}>
-                  A real medical-center <strong style={{ color: "var(--ink)" }}>floor finish plan</strong> — the scale auto-detects;
-                  pick a finish and trace a flooring takeoff in seconds.
-                </div>
-                <div style={{ marginTop: 30, fontFamily: "var(--f-mono)", fontSize: 10.5, letterSpacing: "0.1em", color: "var(--text-faint)" }}>
+                <div style={{ marginTop: 24, fontFamily: "var(--f-mono)", fontSize: 10.5, letterSpacing: "0.1em", color: "var(--text-faint)" }}>
                   Apache-2.0 open source · an open project by{" "}
                   <a href="https://kentucky-ai.com" target="_blank" rel="noopener" style={{ color: "var(--ink-muted)" }}>Kentucky&nbsp;AI</a>
                 </div>
@@ -602,11 +612,26 @@ export default function PlanNavigator({
         </div>
       )}
       {sheets.length > 0 && (
-        <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "12px 18px", borderTop: "1px solid var(--ink)", background: "var(--paper-bright)" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "12px 18px", borderTop: "1px solid var(--ink)", background: "var(--paper-bright)" }}>
           <span style={{ fontFamily: "var(--f-mono)", fontSize: 11, color: "var(--ink-muted)" }}>{sel.length ? `${sel.length} selected` : "select sheets, or hover a card and hit View"}</span>
+          <button disabled={!allKeys.length} onClick={() => setSel(allKeys.length > 0 && sel.length === allKeys.length ? [] : [...allKeys])}
+            style={{ padding: "7px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 12 }}>
+            {allKeys.length > 0 && sel.length === allKeys.length ? "Clear all" : "Select all"}
+          </button>
+          {actionMsg && <span role="status" style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, color: actionMsg.startsWith("Couldn't") ? "var(--c-danger)" : "var(--c-positive)" }}>{actionMsg}</span>}
           <div style={{ flex: 1 }} />
           {sel.length > 0 && (
             <>
+              {onRotate && (
+                <>
+                  <button onClick={() => rotateSelection("left")} title="Rotate selected pages 90° counter-clockwise"
+                    style={{ padding: "7px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 12 }}>↶ 90°</button>
+                  <button onClick={() => rotateSelection("right")} title="Rotate selected pages 90° clockwise"
+                    style={{ padding: "7px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 12 }}>↷ 90°</button>
+                  <button onClick={() => rotateSelection("reset")} title="Restore selected pages to their PDF orientation"
+                    style={{ padding: "7px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12 }}>Reset rotation</button>
+                </>
+              )}
               <button onClick={assignLevel} title="Group the selected sheets under a floor/level — the gallery sorts by it and tabs carry the label"
                 style={{ padding: "7px 12px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 12 }}>Assign level…</button>
               <button onClick={() => setSel([])} style={{ padding: "7px 12px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12 }}>Clear</button>
@@ -621,6 +646,11 @@ export default function PlanNavigator({
             style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "8px 14px", border: "none", background: sel.length >= 2 && sel.length <= MAX_GROUP ? "var(--cobalt)" : "var(--ink-faint)", color: "var(--paper-bright)", cursor: sel.length >= 2 && sel.length <= MAX_GROUP ? "pointer" : "default", fontWeight: 700, fontSize: 12.5 }}>
             <Icon name="sideBySide" size={14} />Open {sel.length >= 2 ? sel.length : ""} side-by-side
           </button>
+          <button disabled={sel.length < 2 || sel.length > MAX_STACK} onClick={() => onOpen(sel, "column")}
+            title={sel.length > MAX_STACK ? `A vertical stack maxes at ${MAX_STACK} sheets — make a smaller working set` : "Open the selected sheets in one scrollable top-to-bottom working set"}
+            style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "8px 14px", border: "none", background: sel.length >= 2 && sel.length <= MAX_STACK ? "var(--cobalt)" : "var(--ink-faint)", color: "var(--paper-bright)", cursor: sel.length >= 2 && sel.length <= MAX_STACK ? "pointer" : "default", fontWeight: 700, fontSize: 12.5 }}>
+            ↕ Open {sel.length >= 2 ? sel.length : ""} stacked
+          </button>
           {onStitch && (
             <button disabled={sel.length < 2 || sel.length > MAX_GROUP} onClick={() => onStitch(sel)}
               title={sel.length > MAX_GROUP ? `A stitch maxes at ${MAX_GROUP} sheets` : "Stitch — join a floor split at a match line into ONE working surface: the sheets butt edge-to-edge (no gap), you align the match line with two clicks, then a room crossing it traces as one shape"}
@@ -631,6 +661,28 @@ export default function PlanNavigator({
         </div>
       )}
     </>
+  );
+
+  const renameDialog = renaming && (
+    <div onClick={() => setRenaming(null)} style={{ position: "absolute", inset: 0, zIndex: 6, background: "var(--scrim)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div onClick={(e) => e.stopPropagation()} className="panel" style={{ width: "min(700px, 92vw)", background: "var(--paper-bright)", boxShadow: "var(--shadow-2)", padding: "18px 20px" }}>
+        <strong style={{ fontFamily: "var(--f-display)", fontSize: 15, color: "var(--ink)" }}>Rename page</strong>
+        <div style={{ marginTop: 12 }}>
+          <input autoFocus value={renaming.value} maxLength={SHEET_TITLE_MAX}
+            onChange={(e) => setRenaming((r) => ({ ...r, value: e.target.value, error: "" }))}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveRename(); } else if (e.key === "Escape") { e.stopPropagation(); setRenaming(null); } }}
+            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: `1px solid ${renaming.error ? "var(--c-danger)" : "var(--ink-faint)"}`, background: "var(--paper-bright)", color: "var(--ink)", fontFamily: "var(--f-mono)", fontSize: 13 }} />
+          <div style={{ display: "flex", marginTop: 6, fontFamily: "var(--f-mono)", fontSize: 10.5 }}>
+            <span style={{ color: "var(--c-danger)" }}>{renaming.error}</span><span style={{ flex: 1 }} />
+            <span style={{ color: "var(--ink-muted)" }}>{renaming.value.length}/{SHEET_TITLE_MAX}</span>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+          <button onClick={() => setRenaming(null)} style={{ ...ctrlBtn, color: "var(--ink-muted)" }}>Cancel</button>
+          <button onClick={saveRename} style={{ ...ctrlBtn, border: "1px solid var(--cobalt)", background: "var(--cobalt)", color: "var(--paper-bright)", fontWeight: 700 }}>Save name</button>
+        </div>
+      </div>
+    </div>
   );
 
   // ── close/remove confirmation ───────────────────────────────────────────
@@ -672,6 +724,7 @@ export default function PlanNavigator({
       {header}
       {mode === "browse" ? browseBody : planBody}
       {confirmDialog}
+      {renameDialog}
     </div>
   );
 

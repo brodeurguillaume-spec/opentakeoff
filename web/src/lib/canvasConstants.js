@@ -49,19 +49,29 @@ export const DETAIL_STALL_MS = 25000;
 
 export const SNAP_CELL = 24;   // snap-grid bucket, raster px (Spline runs 12 — its budgeted raster is denser)
 
+// The roll-goods calculator is a complete but flooring-specific subsystem.
+// AI Takeoff keeps its data/engine readable for existing projects while the
+// generic construction workflow is being established; this switch removes
+// the carpet/sheet-vinyl controls from the daily UI without deleting data or
+// making a future opt-in migration necessary.
+export const ROLL_GOODS_UI_ENABLED = false;
+
 // toolbar menus — STACK-style: the menu face shows the armed tool
 export const MEASURE_TOOLS = [
   { id: "oneclick", icon: "oneClick", label: "One-Click Area", shortcut: "O" },
   { id: "area", icon: "area", label: "Area", shortcut: "A" },
   { id: "rect", icon: "rectTool", label: "Rectangle", shortcut: "R" },
   { id: "linear", icon: "linear", label: "Linear", shortcut: "L" },
+  { id: "linear-count", icon: "count", label: "Répartition linéaire" },
   { id: "curve", icon: "curve", label: "Curved Line", shortcut: "Q" },
   { id: "surface", icon: "surface", label: "Surface Area", shortcut: "S" },
   { id: "count", icon: "count", label: "Count", shortcut: "C" },
 ];
 export const CUT_TOOLS = [
-  { id: "deduct", icon: "deduct", label: "Deduct shape", shortcut: "D" },
-  { id: "deduct-rect", icon: "deductRect", label: "Deduct rectangle", shortcut: "⇧D" },
+  { id: "deduct-linked", icon: "deduct", label: "Deduct from selected area", shortcut: "E" },
+  { id: "deduct-linked-rect", icon: "deductRect", label: "Deduct rectangle from selected area", shortcut: "⇧E" },
+  { id: "deduct", icon: "deduct", label: "Automatic / free deduct", shortcut: "D" },
+  { id: "deduct-rect", icon: "deductRect", label: "Automatic / free deduct rectangle", shortcut: "⇧D" },
 ];
 export const MARKUP_TOOLS = [
   { id: "highlighter", icon: "highlighter", label: "Highlighter", shortcut: "H" },

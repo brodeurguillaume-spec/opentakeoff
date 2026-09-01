@@ -119,6 +119,7 @@ export function createTileCompositor() {
   // placeholder search needs it to rank the base against the pyramid levels
   const baseDensityBySheet = new Map<string, number>();
   const opened = new Set<string>();
+  const openedTouch = new Map<string, number>();
   // Every tile request awaits this before hitting the worker — dataPromise
   // (an IndexedDB read) resolves well after openSheet() returns, so without
   // this gate a base-layer paint kicked off right after openSheet() would
@@ -134,13 +135,14 @@ export function createTileCompositor() {
 
   /** Idempotent per sheetKey. `dataPromise` must resolve to a FRESH byte copy
    *  (transferred to the worker, not shared with the main-thread pdf.js doc). */
-  function openSheet(sheetKey: string, pageNum: number, dataPromise: Promise<ArrayBuffer | Uint8Array>, imgW: number, imgH: number) {
+  function openSheet(sheetKey: string, pageNum: number, dataPromise: Promise<ArrayBuffer | Uint8Array>, imgW: number, imgH: number, rotation = 0) {
     levelsFor(sheetKey, imgW, imgH);
+    openedTouch.set(sheetKey, performance.now());
     if (opened.has(sheetKey)) return;
     opened.add(sheetKey);
     const ready = dataPromise.then((data) => {
       const buf = data instanceof Uint8Array ? data.slice().buffer : data;
-      return pool.openSheet(sheetKey, pageNum, buf);
+      return pool.openSheet(sheetKey, pageNum, buf, rotation);
     }).catch((err) => {
       opened.delete(sheetKey);
       // A sheet that never opens is a permanently blank panel, not a
@@ -149,6 +151,27 @@ export function createTileCompositor() {
       console.error(`[tiles] sheet failed to open: ${sheetKey}`, err);
     });
     readyBySheet.set(sheetKey, ready);
+  }
+
+  /** Switch visible sheets without discarding completed tiles. The bitmap LRU
+   * still enforces the global byte budget; worker-side PDF instances get their
+   * own small cap so browsing a long plan set cannot grow memory forever. */
+  function beginView(keepKeys: string[], maxWorkerSheets = 4) {
+    generation++;
+    for (const r of inflightReqs.values()) { try { r.cancel(); } catch { /* done */ } }
+    inflightReqs.clear();
+    visibleKeys.clear();
+    const keep = new Set(keepKeys);
+    const old = [...opened]
+      .filter((key) => !keep.has(key))
+      .sort((a, b) => (openedTouch.get(a) || 0) - (openedTouch.get(b) || 0));
+    while (opened.size > Math.max(maxWorkerSheets, keep.size) && old.length) {
+      const key = old.shift()!;
+      pool.closeSheet(key);
+      opened.delete(key);
+      openedTouch.delete(key);
+      readyBySheet.delete(key);
+    }
   }
 
   /** Clears every cached tile and closes every worker-side sheet — call on
@@ -160,6 +183,7 @@ export function createTileCompositor() {
     cache.clear();
     for (const k of opened) pool.closeSheet(k);
     opened.clear();
+    openedTouch.clear();
     levelsBySheet.clear();
     dimsBySheet.clear();
     readyBySheet.clear();
@@ -446,5 +470,5 @@ export function createTileCompositor() {
 
   function dispose() { resetAll(); pool.dispose(); }
 
-  return { openSheet, resetAll, paintBase, paintDetail, dispose };
+  return { openSheet, beginView, resetAll, paintBase, paintDetail, dispose };
 }

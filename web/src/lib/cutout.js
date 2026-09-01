@@ -164,3 +164,17 @@ export function recomposeCutouts(baseOuterPx, baseHolesPx, deductRingsPx) {
   const metrics = polyWithHolesMetrics(outer, holes);
   return { outer, holes, area: metrics.area, perim: metrics.perim };
 }
+
+/**
+ * Restores the geometry-bearing fields of a frozen parent snapshot onto the
+ * current parent shape. A holeless snapshot intentionally has NO
+ * `verts_norm_holes` key; a plain object spread would otherwise retain the
+ * current hole and make a moved cut union its old and new positions.
+ */
+export function restoreCutoutSnapshot(shape, snapshot) {
+  const restored = { ...shape, ...snapshot };
+  if (!Object.prototype.hasOwnProperty.call(snapshot, "verts_norm_holes")) {
+    delete restored.verts_norm_holes;
+  }
+  return restored;
+}

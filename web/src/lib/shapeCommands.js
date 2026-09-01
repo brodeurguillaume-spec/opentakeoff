@@ -63,6 +63,13 @@
 //             gesture, not a parent edit — and nothing counts. `restore`
 //             (undo of a draw, or an explicit delete of the reconciled
 //             deduct) unmints the deduct and puts the parent back verbatim.
+//   cutoutGeom edits an EXISTING reconciled deduct and patches the linked
+//             parent's hole geometry in the same command. The deduct receives
+//             the normal geometry provenance stamp; the derived parent patch
+//             does not. Undo/redo restores both records byte-for-byte.
+//   cutoutMove translates a parent area, every real hole, and every linked
+//             deduct (including each durable parent_prev restore snapshot) as
+//             ONE gesture. Undo/redo restore the full affected records exactly.
 // ─────────────────────────────────────────────────────────────────────────────
 import { mintUuid, nowIso, stampEdit } from "./provenance.js";
 import { assignShapeLabel } from "./shapeLabels.js";
@@ -77,6 +84,8 @@ export const PROVENANCE_POLICY = {
   review: "origin.reviewed → true + accepted_ts per still-pending shape; restore puts the prior origin back verbatim",
   ruleApply: "add semantics (created_at + id mint per shape, ONE undo entry per batch); caller-built rule_v1 origin carries rule_id + seed_shape_id",
   cutout: "#137 — mints the deduct (id + created_at) AND patches its parent's verts_norm/verts_norm_holes/computed as ONE undo entry; parent patch stamps nothing, nothing counts; restore unmints the deduct and reverts the parent verbatim",
+  cutoutGeom: "edits one reconciled deduct AND re-composes its parent's cutout geometry atomically; deduct gets the normal geometry stamp, parent patch gets none; restore is byte-exact",
+  cutoutMove: "translates a parent + holes + linked deducts + durable restore snapshots atomically; affected records get one move stamp; restore is byte-exact",
   rollcut: "#136 — NO stamp: a manual roll-cut override (slide/resize/reorder/reset) writes LAYOUT metadata (shape.roll_layout) over the shape, never its geometry or provenance; a row without roll_layout clears the key; `prev` (grab-time rows) builds the inverse when a live preview already wrote the final state",
 };
 
@@ -141,6 +150,28 @@ const withCutout = (s, patch) => {
   if ("verts_norm_holes" in patch) out.verts_norm_holes = patch.verts_norm_holes; else delete out.verts_norm_holes;
   if ("computed" in patch) out.computed = patch.computed; else delete out.computed;
   return out;
+};
+
+const translateRing = (ring, dx, dy) => (ring || []).map(([x, y]) => [x + dx, y + dy]);
+const translateCutoutPatch = (patch, dx, dy) => {
+  if (!patch || typeof patch !== "object") return patch;
+  return {
+    ...patch,
+    ...(Array.isArray(patch.verts_norm) ? { verts_norm: translateRing(patch.verts_norm, dx, dy) } : {}),
+    ...(Array.isArray(patch.verts_norm_holes) ? { verts_norm_holes: patch.verts_norm_holes.map((ring) => translateRing(ring, dx, dy)) } : {}),
+  };
+};
+const translatedCutoutShape = (shape, dx, dy) => {
+  const stamped = stampEdit(shape, "move");
+  const origin = stamped.origin?.parent_prev
+    ? { ...stamped.origin, parent_prev: translateCutoutPatch(stamped.origin.parent_prev, dx, dy) }
+    : stamped.origin;
+  return {
+    ...stamped,
+    verts_norm: translateRing(shape.verts_norm, dx, dy),
+    ...(Array.isArray(shape.verts_norm_holes) ? { verts_norm_holes: shape.verts_norm_holes.map((ring) => translateRing(ring, dx, dy)) } : {}),
+    ...(origin ? { origin } : {}),
+  };
 };
 
 // condition_id + provenance snapshot for reassign restore rows.
@@ -317,6 +348,79 @@ export function applyShapeCommand(shapes, cmd) {
       if (!parentPrev) return { shapes, inverse: null };   // parent vanished mid-gesture — refuse rather than mint an orphaned deduct
       next.push(minted);
       return { shapes: next, inverse: { type: "cutout", restore: true, deductId: minted.id, parentId: cmd.parentId, parentPrev } };
+    }
+    case "cutoutGeom": {
+      const deduct = shapes.find((s) => s.id === cmd.id);
+      const parent = shapes.find((s) => s.id === cmd.parentId);
+      if (!deduct || !parent || deduct.cuts_shape_id !== parent.id) return { shapes, inverse: null };
+
+      // Restore commands are symmetric snapshots: capture the state being
+      // replaced, write the requested pair verbatim, and hand the captured
+      // pair back as the inverse. Redo therefore never re-stamps an edit.
+      if (cmd.restore) {
+        const currentDeduct = geomSnapshot(deduct);
+        const currentParent = cutoutSnapshot(parent);
+        const next = shapes.map((s) => {
+          if (s.id === deduct.id) return withGeomFields(s, cmd.deductPrev);
+          if (s.id === parent.id) return withCutout(s, cmd.parentPrev);
+          return s;
+        });
+        return {
+          shapes: next,
+          inverse: {
+            type: "cutoutGeom", restore: true, id: deduct.id, parentId: parent.id,
+            deductPrev: currentDeduct, parentPrev: currentParent,
+          },
+        };
+      }
+
+      const deductPrev = cmd.prev || geomSnapshot(deduct);
+      const parentPrev = cutoutSnapshot(parent);
+      const stamped = stampEdit(withGeomFields(deduct, deductPrev), kindFor(cmd.editKind));
+      const nextDeduct = { ...stamped, verts_norm: cmd.verts_norm };
+      if (cmd.computed !== undefined) nextDeduct.computed = cmd.computed;
+      const next = shapes.map((s) => {
+        if (s.id === deduct.id) return nextDeduct;
+        if (s.id === parent.id) return withCutout(s, cmd.parentNext);
+        return s;
+      });
+      return {
+        shapes: next,
+        inverse: {
+          type: "cutoutGeom", restore: true, id: deduct.id, parentId: parent.id,
+          deductPrev, parentPrev,
+        },
+      };
+    }
+    case "cutoutMove": {
+      if (cmd.restore) {
+        const rows = Array.isArray(cmd.rows) ? cmd.rows : [];
+        const byId = new Map(rows.map((shape) => [shape.id, shape]));
+        const current = shapes.filter((shape) => byId.has(shape.id));
+        if (current.length !== rows.length) return { shapes, inverse: null };
+        return {
+          shapes: shapes.map((shape) => byId.get(shape.id) || shape),
+          inverse: { type: "cutoutMove", restore: true, rows: current },
+        };
+      }
+      const parent = shapes.find((shape) => shape.id === cmd.parentId);
+      if (!parent) return { shapes, inverse: null };
+      const affectedIds = new Set([parent.id, ...shapes.filter((shape) => shape.cuts_shape_id === parent.id).map((shape) => shape.id)]);
+      const prevRows = Array.isArray(cmd.prevRows)
+        ? cmd.prevRows.filter((shape) => affectedIds.has(shape.id))
+        : shapes.filter((shape) => affectedIds.has(shape.id));
+      if (prevRows.length !== affectedIds.size) return { shapes, inverse: null };
+      const dx = Number(cmd.dx) || 0, dy = Number(cmd.dy) || 0;
+      const computedById = new Map((cmd.nextRows || []).map((shape) => [shape.id, shape.computed]));
+      const moved = new Map(prevRows.map((shape) => {
+        const next = translatedCutoutShape(shape, dx, dy);
+        if (computedById.has(shape.id)) next.computed = computedById.get(shape.id);
+        return [shape.id, next];
+      }));
+      return {
+        shapes: shapes.map((shape) => moved.get(shape.id) || shape),
+        inverse: { type: "cutoutMove", restore: true, rows: prevRows },
+      };
     }
     case "rollcut": {
       // #136 — patch shape.roll_layout across one or more shapes as ONE undo

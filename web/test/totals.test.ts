@@ -1,10 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 // totals.js is plain JS (allowJs); the tsx loader resolves it from the .ts test.
-import { conditionTotals, materialsSummary, verticalWallSf, sheetTotals, reportJson } from "../src/lib/totals.js";
+import { conditionTotals, materialsSummary, verticalWallSf, sheetTotals, mapZoneGroupedRows, reportJson } from "../src/lib/totals.js";
 
 const area = (id: string, sf: number) => ({ condition_id: id, measure_role: "floor_area", computed: { area_sf: sf } });
 const lin = (id: string, lf: number) => ({ condition_id: id, measure_role: "linear", computed: { perimeter_lf: lf } });
+
+test("Project Map grouping partitions confirmed semantic zones and leaves the rest unmapped", () => {
+  const conditions = [{ id: "br", finish_tag: "BR-1" }];
+  const shapes = [
+    { ...area("br", 100), id: "in", sheet_id: "A401", verts_norm: [[0.1, 0.1], [0.2, 0.1], [0.2, 0.2]] },
+    { ...area("br", 25), id: "out", sheet_id: "A401", verts_norm: [[0.8, 0.8], [0.9, 0.8], [0.9, 0.9]] },
+  ];
+  const regions = [{ id: "front", name: "Front elevation", sheet_id: "A401", purposes: ["semantic"], geometry: { verts_norm: [[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5]] }, review: { status: "confirmed" } }];
+  const groups = mapZoneGroupedRows(conditions, shapes, regions);
+  assert.deepEqual(groups.map((group: any) => [group.label, group.rows[0].total_sf]), [["Front elevation", 100], ["Unmapped", 25]]);
+});
 
 test("materials: order qty = area ÷ coverage, rounded up to whole units", () => {
   const conds = [{
@@ -102,6 +113,15 @@ test("materials: linear and count bases use LF/EA, never area", () => {
   const byName = Object.fromEntries(row.materials.map((m: any) => [m.name, m.qty]));
   assert.equal(byName["Cove adhesive"], 3);  // ceil(120/40)
   assert.equal(byName.Corner, 7);
+});
+
+test("linear distributions contribute their piece count to EA and never LF", () => {
+  const [row] = conditionTotals(
+    [{ id: "c", finish_tag: "ANCHOR" }],
+    [{ condition_id: "c", measure_role: "count_run", computed: { count: 4, guide_lf: 10 } }],
+  );
+  assert.equal(row.ea, 4);
+  assert.equal(row.lf, 0);
 });
 
 // ── report JSON schema v1 — the key set is a published contract (2026-07-07) ──

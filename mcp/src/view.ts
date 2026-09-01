@@ -134,7 +134,7 @@ export function drawShapes(ctx: Ctx2D, toCanvas: ToCanvas, shapes: Shape[], shee
     ctx.beginPath();
     ctx.moveTo(pts[0][0], pts[0][1]);
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-    if (s.measure_role !== "linear" && s.measure_role !== "surface_area") ctx.closePath();
+    if (s.measure_role !== "linear" && s.measure_role !== "surface_area" && s.measure_role !== "count_run") ctx.closePath();
     ctx.stroke();
   }
   ctx.setLineDash([]);

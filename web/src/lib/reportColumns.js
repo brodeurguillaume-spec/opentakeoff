@@ -38,7 +38,7 @@ export const GETTERS = {
 export const TABLE_PROFILE = [
   { key: "finish",        header: "Finish",     defaultVisible: true, locked: true },
   { key: "shapes",        header: "Shapes",     defaultVisible: true },
-  { key: "floor_sf",      header: "Floor SF",   defaultVisible: true },
+  { key: "floor_sf",      header: "Surface SF", defaultVisible: true },
   { key: "wall_sf",       header: "Wall SF",    defaultVisible: true },
   { key: "border_sf",     header: "Border SF",  defaultVisible: true },
   { key: "total_sf",      header: "Total SF",   defaultVisible: false, foot: (g) => g.total_sf },
@@ -61,7 +61,7 @@ export const CSV_PROFILE = [
   { key: "shapes",       header: "Shapes",              defaultVisible: true },
   { key: "multiplier",   header: "Multiplier",          defaultVisible: true },
   { key: "waste_pct",    header: "Waste %",             defaultVisible: true },
-  { key: "floor_sf",     header: "Floor SF",            defaultVisible: true },
+  { key: "floor_sf",     header: "Surface SF",          defaultVisible: true },
   { key: "wall_sf",      header: "Wall SF",             defaultVisible: true },
   { key: "border_sf",    header: "Border SF",           defaultVisible: true },
   { key: "total_sf",     header: "Total SF",            defaultVisible: true },

@@ -27,7 +27,7 @@
 // expensive part; painting (this worker's own job) is.
 //
 // Protocol:
-//   in : { type:"openSheet", sheetKey, file, pageNum, data: ArrayBuffer }
+//   in : { type:"openSheet", sheetKey, file, pageNum, rotation, data: ArrayBuffer }
 //        { type:"renderTile", reqId, sheetKey, scale, rect:{x,y,w,h}, dark }
 //        { type:"cancel", reqId }
 //        { type:"closeSheet", sheetKey }
@@ -96,6 +96,7 @@ class WorkerFilterFactory {
 interface SheetEntry {
   ready: Promise<unknown>; // resolves to the pdf.js page object
   chain: Promise<void>;    // serializes renders on this sheet's page
+  rotation: number;        // effective pdf.js viewport rotation (native + user quarter-turn)
 }
 
 const sheets = new Map<string, SheetEntry>();
@@ -120,7 +121,7 @@ function invertOffscreen(canvas: OffscreenCanvas) {
 }
 
 type InMsg =
-  | { type: "openSheet"; sheetKey: string; pageNum: number; data: ArrayBuffer }
+  | { type: "openSheet"; sheetKey: string; pageNum: number; rotation?: number; data: ArrayBuffer }
   | { type: "renderTile"; reqId: number; sheetKey: string; scale: number; rect: { x: number; y: number; w: number; h: number }; dark: boolean }
   | { type: "cancel"; reqId: number }
   | { type: "closeSheet"; sheetKey: string };
@@ -153,7 +154,7 @@ self.onmessage = async (e: MessageEvent<InMsg>) => {
       const page = await doc.getPage(msg.pageNum);
       return page;
     })();
-    sheets.set(msg.sheetKey, { ready, chain: Promise.resolve() });
+    sheets.set(msg.sheetKey, { ready, chain: Promise.resolve(), rotation: msg.rotation || 0 });
     ready.then(
       () => post({ type: "sheetReady", sheetKey: msg.sheetKey }),
       (err) => { sheets.delete(msg.sheetKey); post({ type: "sheetError", sheetKey: msg.sheetKey, message: String(err?.message || err) }); },
@@ -190,7 +191,7 @@ self.onmessage = async (e: MessageEvent<InMsg>) => {
         const canvas = new OffscreenCanvas(Math.max(1, rect.w), Math.max(1, rect.h));
         const ctx = canvas.getContext("2d") as OffscreenCanvasRenderingContext2D;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const viewport = (page as any).getViewport({ scale });
+        const viewport = (page as any).getViewport({ scale, rotation: entry.rotation });
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const renderTask = (page as any).render({
           canvasContext: ctx,

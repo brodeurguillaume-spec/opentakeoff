@@ -301,8 +301,8 @@ test("F3: TakeoffCanvas.ensureMask still pins the mask to the page in POINTS", (
   assert.match(site, /baseScale:\s*RENDER_SCALE/, "the baseline must be RENDER_SCALE, the pin");
   assert.match(site, /renderScale:\s*rsNow/, "…and k must come from this sheet's own render scale");
   assert.match(site, /pageW:\s*pgVp\.width[\s\S]*pageH:\s*pgVp\.height/, "…over the page in POINTS");
-  assert.match(text, /pgVp = pageObjsRef\.current\.get\(key\)\?\.getViewport\(\{ scale: 1 \}\)/,
-    "the points must come from a scale-1 viewport, not from the panel bitmap dims");
+  assert.match(text, /pgVp = pageObj \? viewportFor\(key, pageObj, 1\) : null/,
+    "the points must come from the sheet's oriented scale-1 viewport, not from the panel bitmap dims");
 });
 
 // ── audit A3: the minimum-passage path is a DILATION path, and it must take

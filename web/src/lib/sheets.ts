@@ -12,6 +12,11 @@ export const RENDER_SCALE = 2.0;
  * the full auto budget, so a 4-up of large hi-res sheets is memory-heavy. */
 export const MAX_GROUP = 4;
 
+/** Top-to-bottom working-set cap. Vertical stacks keep independent sheets and
+ * render only viewport tiles, so they can safely carry more pages than the
+ * memory-sensitive side-by-side/stitch layouts without becoming unbounded. */
+export const MAX_STACK = 12;
+
 export interface Scale {
   label: string;
   /** real feet per image pixel at RENDER_SCALE */

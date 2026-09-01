@@ -15,6 +15,22 @@ export function bridgeParent(locationLike = window.location, referrer = document
   }
 }
 
+export function bridgeCanvasContext(payload) {
+  if (!payload || typeof payload !== "object" || payload.document_name !== "") return payload;
+  return {
+    ...payload,
+    document_name: null,
+    document_id: null,
+    document_sha256: null,
+    document_revision: null,
+    sheet_id: null,
+    visible_sheet_ids: [],
+    units_per_px: null,
+    scale_source: null,
+    scale_confirmed: null,
+  };
+}
+
 export function shapeFacts(before, after, cmd) {
   const previous = new Map((before || []).map((shape) => [shape.id, shape]));
   const current = new Map((after || []).map((shape) => [shape.id, shape]));
@@ -171,7 +187,7 @@ export function createGrumpBridge({ applyTakeoff, applyRegionProposal = async (_
 
   const publishContext = (payload = getContext()) => {
     if (!sessionId || !payload || typeof payload !== "object") return false;
-    post({ kind: "canvas.context", session_id: sessionId, payload });
+    post({ kind: "canvas.context", session_id: sessionId, payload: bridgeCanvasContext(payload) });
     retryDeferredProposals();
     return true;
   };

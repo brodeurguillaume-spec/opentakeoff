@@ -64,7 +64,7 @@ export function createTilePool(size = POOL_SIZE) {
   // half-rendered (the bug this exists for). Bytes are retained per open
   // sheet so a respawned worker can be re-fed; that retention cost is why the
   // whole path is gated on LOW_MEMORY_DEVICE — desktop behavior is unchanged.
-  const sheetBytes = LOW_MEMORY_DEVICE ? new Map<string, { pageNum: number; data: ArrayBuffer }>() : null;
+  const sheetBytes = LOW_MEMORY_DEVICE ? new Map<string, { pageNum: number; rotation: number; data: ArrayBuffer }>() : null;
 
   function onWorkerDeath(i: number, err: unknown) {
     const dead = workers[i];
@@ -79,9 +79,9 @@ export function createTilePool(size = POOL_SIZE) {
     // Respawn and re-feed every open sheet; settled-state bookkeeping in
     // onMessage already ignores duplicate sheetReady after settle.
     const w = ensureWorker(i);
-    for (const [sheetKey, { pageNum, data }] of sheetBytes) {
+    for (const [sheetKey, { pageNum, rotation, data }] of sheetBytes) {
       const copy = data.slice(0);
-      w.postMessage({ type: "openSheet", sheetKey, pageNum, data: copy }, [copy]);
+      w.postMessage({ type: "openSheet", sheetKey, pageNum, rotation, data: copy }, [copy]);
     }
   }
 
@@ -118,7 +118,7 @@ export function createTilePool(size = POOL_SIZE) {
    *  fresh transferable copy per worker (transfer detaches, so one buffer
    *  can't be handed to N workers), so the caller's own copy is untouched
    *  either way. Resolves once every worker has the sheet open. */
-  function openSheet(sheetKey: string, pageNum: number, data: ArrayBuffer): Promise<void> {
+  function openSheet(sheetKey: string, pageNum: number, data: ArrayBuffer, rotation = 0): Promise<void> {
     if (disposed) return Promise.reject(new Error("tile pool disposed"));
     const existing = sheetOpen.get(sheetKey);
     if (existing) return existing.promise;
@@ -126,10 +126,10 @@ export function createTilePool(size = POOL_SIZE) {
     const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
     const st: SheetOpenState = { promise, resolve, reject, settled: false, readyCount: 0 };
     sheetOpen.set(sheetKey, st);
-    sheetBytes?.set(sheetKey, { pageNum, data }); // pool owns `data` — retained (phone only) so a respawned worker can be re-fed
+    sheetBytes?.set(sheetKey, { pageNum, rotation, data }); // pool owns `data` — retained (phone only) so a respawned worker can be re-fed
     for (let i = 0; i < size; i++) {
       const copy = data.slice(0); // independent transferable per worker
-      ensureWorker(i).postMessage({ type: "openSheet", sheetKey, pageNum, data: copy }, [copy]);
+      ensureWorker(i).postMessage({ type: "openSheet", sheetKey, pageNum, rotation, data: copy }, [copy]);
     }
     return promise;
   }

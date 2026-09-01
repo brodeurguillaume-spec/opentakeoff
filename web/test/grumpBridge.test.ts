@@ -2,12 +2,37 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  bridgeCanvasContext,
   bridgeParent,
   createGrumpBridge,
   regionFacts,
   shapeFacts,
   shouldApplyRegionProposal,
 } from "../src/lib/grumpBridge.js";
+
+test("bridgeCanvasContext publishes an honest empty-project heartbeat", () => {
+  assert.deepEqual(bridgeCanvasContext({
+    document_name: "",
+    document_id: null,
+    document_sha256: null,
+    document_revision: null,
+    sheet_id: "",
+    visible_sheet_ids: [""],
+    units_per_px: null,
+    scale_source: null,
+    scale_confirmed: null,
+  }), {
+    document_name: null,
+    document_id: null,
+    document_sha256: null,
+    document_revision: null,
+    sheet_id: null,
+    visible_sheet_ids: [],
+    units_per_px: null,
+    scale_source: null,
+    scale_confirmed: null,
+  });
+});
 
 test("bridgeParent enables only an explicitly embedded loopback canvas", () => {
   assert.equal(

@@ -95,6 +95,7 @@ function perSheet(conditions, shapes) {
       case "surface_area": row.wall_sf += cp.area_sf || 0; break;
       case "linear": row.lf += cp.perimeter_lf || 0; row.border_sf += cp.area_sf || 0; break;
       case "count": row.ea += cp.count || 1; break;
+      case "count_run": row.ea += cp.count || 0; break;
       default: break;
     }
   }
@@ -178,9 +179,9 @@ export function diffToCsv(diff, { aName = "baseline", bName = "current", units =
   };
   const row = (cells) => cells.map(esc).join(",");
   const lines = [];
-  if (projectName) lines.push(`# ${projectName} — OpenTakeoff revision compare`);
+  if (projectName) lines.push(`# ${projectName} — comparaison de révisions AnvilTrace`);
   lines.push(`# ${aName} -> ${bName}`);
-  lines.push(row(["Finish", "Status", `d Floor ${AU}`, `d Wall ${AU}`, `d Border ${AU}`, `d ${LU}`, "d EA", `d Total ${AU}`,
+  lines.push(row(["Finish", "Status", `d Surface ${AU}`, `d Wall ${AU}`, `d Border ${AU}`, `d ${LU}`, "d EA", `d Total ${AU}`,
     `${AU} ordered (${aName})`, `${AU} ordered (${bName})`, `d ${AU} ordered`]));
   for (const c of diff.conditions) {
     lines.push(row([c.finish_tag, c.status, A(c.deltas.floor_sf), A(c.deltas.wall_sf), A(c.deltas.border_sf),
@@ -191,7 +192,7 @@ export function diffToCsv(diff, { aName = "baseline", bName = "current", units =
   lines.push(row(["TOTAL", "", "", "", "", L(t.deltas.lf), t.deltas.ea, A(t.deltas.total_sf), A(t.a.total_sf_net), A(t.b.total_sf_net), A(t.deltas.total_sf_net)]));
   if (diff.sheets.length) {
     lines.push("");
-    lines.push(row(["Sheet", "Status", `d Floor ${AU}`, `d Wall ${AU}`, `d Border ${AU}`, `d ${LU}`, "d EA"]));
+    lines.push(row(["Sheet", "Status", `d Surface ${AU}`, `d Wall ${AU}`, `d Border ${AU}`, `d ${LU}`, "d EA"]));
     for (const s of diff.sheets) {
       lines.push(row([revSheetLabel(s.sheet_id), s.status, A(s.deltas.floor_sf), A(s.deltas.wall_sf), A(s.deltas.border_sf), L(s.deltas.lf), s.deltas.ea]));
     }

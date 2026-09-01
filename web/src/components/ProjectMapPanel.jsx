@@ -26,19 +26,21 @@ function ListValues({ title, values }) {
 }
 
 function RegionEditor({ editor, scales, detectedScales, standardScales, sheetLabel, onChange, onSave, onRedraw, onDelete, onCancel }) {
-  const valid = String(editor.name || "").trim() && (!editor.scale_enabled || Number(editor.scale_upp) > 0);
+  const grumpNames = Boolean(editor.grump_names_zone);
+  const valid = (grumpNames || String(editor.name || "").trim()) && (!editor.scale_enabled || Number(editor.scale_upp) > 0);
   return <>
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <b style={{ fontSize: 13 }}>{editor.existing ? "Edit map zone" : "Name new map zone"}</b>
       <span style={{ marginLeft: "auto", fontFamily: "var(--f-mono)", fontSize: 9.5, color: "var(--ink-muted)" }}>{sheetLabel(editor.sheet_id)}</span>
     </div>
     <label style={label}>Name</label>
-    <input data-testid="map-region-name" autoFocus value={editor.name} placeholder="Example: Section A, Patient Room 161" onChange={(event) => onChange({ ...editor, name: event.target.value })} style={input} />
+    <input data-testid="map-region-name" autoFocus={!grumpNames} disabled={grumpNames} value={editor.name} placeholder={grumpNames ? "GRUMP la nommera après l'analyse" : "Example: Section A, Patient Room 161"} onChange={(event) => onChange({ ...editor, name: event.target.value })} style={{ ...input, opacity: grumpNames ? 0.55 : 1 }} />
     <label style={label}>Type</label>
     <select data-testid="map-region-kind" value={editor.kind} onChange={(event) => onChange({ ...editor, kind: event.target.value })} style={input}>
       <option value="area">Area</option><option value="plan">Plan</option><option value="room">Room</option>
       <option value="section">Section</option><option value="elevation">Elevation</option><option value="detail">Detail</option>
     </select>
+    {editor.existing && <div style={{ marginTop: 8, padding: 8, border: "1px solid var(--ink-faint)", color: "var(--ink-secondary)", fontSize: 10.5 }}>Contour: drag a round point on the plan to move it; drag a diamond on an edge to add a point; click a round point, then Delete, to remove it. Every completed change confirms a new audited revision.</div>}
     <label style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 11, fontSize: 11.5, color: "var(--ink)" }}>
       <input data-testid="map-region-scale-enabled" type="checkbox" checked={Boolean(editor.scale_enabled)} onChange={(event) => {
         const enabled = event.target.checked;
@@ -61,9 +63,13 @@ function RegionEditor({ editor, scales, detectedScales, standardScales, sheetLab
       </select>
       <div style={{ marginTop: 5, fontSize: 10.5, color: "var(--ink-muted)" }}>Human-confirmed when saved. Measurements crossing its outline will be refused.</div>
     </>}
+    {!editor.existing && <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 13, paddingTop: 10, borderTop: "1px solid var(--ink-faint)", fontSize: 11.5, lineHeight: 1.35, color: "var(--ink)" }}>
+      <input data-testid="map-region-grump-name" type="checkbox" checked={grumpNames} onChange={(event) => onChange({ ...editor, grump_names_zone: event.target.checked })} />
+      <span>Laisser GRUMP déterminer le nom de la zone.<small style={{ display: "block", marginTop: 3, color: "var(--ink-muted)" }}>La géométrie sera sauvegardée immédiatement et le nom restera clairement en attente jusqu’à l’analyse de GRUMP.</small></span>
+    </label>}
     <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
-      <button data-testid="map-region-save" type="button" disabled={!valid} onClick={onSave} style={{ ...button("#20895c", "#20895c"), cursor: valid ? "pointer" : "not-allowed", opacity: valid ? 1 : 0.45 }}>Save</button>
-      {editor.existing && <button data-testid="map-region-redraw" type="button" onClick={() => onRedraw(editor.id)} style={button("var(--ink-secondary)")}>Redraw</button>}
+      <button data-testid="map-region-save" type="button" disabled={!valid} onClick={onSave} style={{ ...button("var(--cobalt)", "var(--cobalt)"), cursor: valid ? "pointer" : "not-allowed", opacity: valid ? 1 : 0.45 }}>Enregistrer la zone</button>
+      {editor.existing && <button data-testid="map-region-redraw" type="button" onClick={() => onRedraw(editor.id)} style={button("var(--ink-secondary)")}>Manual redraw</button>}
       {editor.existing && <button data-testid="map-region-delete" type="button" onClick={() => onDelete(editor.id)} style={button("var(--c-danger)")}>Delete</button>}
       <button type="button" onClick={onCancel} style={{ ...button("var(--ink-muted)"), border: "none" }}>Cancel</button>
     </div>
@@ -94,14 +100,13 @@ export default function ProjectMapPanel({
     </div>
 
     {redrawId && !editor ? <div data-testid="map-region-editor">
-      <div style={{ marginTop: 12, fontWeight: 700, fontSize: 13 }}>Redrawing map zone</div>
-      <div style={{ marginTop: 6, color: "var(--ink-muted)", fontSize: 11.5 }}>Trace at least three points, then Finish. The saved contour stays intact until you confirm the replacement.</div>
+      <div style={{ marginTop: 12, fontWeight: 700, fontSize: 13 }}>Manually redrawing map zone</div>
+      <div style={{ marginTop: 6, color: "var(--ink-muted)", fontSize: 11.5 }}>This is a human Project Map trace, not a GRUMP retry. Trace at least three points, then Finish. The saved contour stays intact until you confirm the replacement.</div>
       <button type="button" onClick={onCancelRedraw} style={{ marginTop: 10, ...button("var(--ink-secondary)") }}>Cancel redraw</button>
     </div> : editor ? <div data-testid="map-region-editor" style={{ marginTop: 12 }}><RegionEditor editor={editor} scales={scales} detectedScales={detectedScales} standardScales={standardScales} sheetLabel={sheetLabel} onChange={onEditorChange} onSave={onSave} onRedraw={onRedraw} onDelete={onDelete} onCancel={onCancelEdit} /></div> : <>
       <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
         <button type="button" onClick={() => setScope("visible")} style={button(scope === "visible" ? "var(--c-positive)" : "var(--ink-faint)", scope === "visible" ? "var(--c-positive)" : "transparent")}>Visible sheets</button>
         <button type="button" onClick={() => setScope("all")} style={button(scope === "all" ? "var(--c-positive)" : "var(--ink-faint)", scope === "all" ? "var(--c-positive)" : "transparent")}>Whole project</button>
-        <button type="button" onClick={onStartNew} style={{ marginLeft: "auto", ...button("var(--cobalt)") }}>+ Zone</button>
       </div>
       <div data-testid="project-map-list" style={{ marginTop: 10, display: "grid", gap: 5, maxHeight: selected ? 156 : 310, overflowY: "auto" }}>
         {!shown.length && <div style={{ padding: 12, border: "1px dashed var(--ink-faint)", color: "var(--ink-muted)", fontSize: 11.5 }}>No mapped zone in this scope. Click + Zone, then trace on the plan.</div>}
@@ -137,9 +142,10 @@ export default function ProjectMapPanel({
           <button type="button" data-testid="project-map-reject" onClick={() => onReview(selected.id, "rejected", note, "human_reject")} style={button("var(--c-danger)")}>Reject</button>
           <button type="button" disabled={!note.trim() || note.trim() === (selected.review?.note || "")} onClick={() => onReview(selected.id, selected.review?.status || "needs_review", note, "human_explanation")} style={{ ...button("var(--cobalt)"), opacity: !note.trim() || note.trim() === (selected.review?.note || "") ? 0.45 : 1 }}>Save explanation</button>
         </div>
-        <div style={{ display: "flex", gap: 5, marginTop: 7 }}><button type="button" onClick={() => onEdit(selected)} style={button("var(--ink-secondary)")}>Modify</button><button type="button" onClick={() => onRedraw(selected.id)} style={button("var(--ink-secondary)")}>Redraw</button><button type="button" onClick={() => onDelete(selected.id)} style={button("var(--c-danger)")}>Delete</button></div>
+        <div style={{ display: "flex", gap: 5, marginTop: 7 }}><button type="button" onClick={() => onEdit(selected)} style={button("var(--ink-secondary)")}>Edit details & points</button><button type="button" onClick={() => onRedraw(selected.id)} style={button("var(--ink-secondary)")}>Manual redraw</button><button type="button" onClick={() => onDelete(selected.id)} style={button("var(--c-danger)")}>Delete</button></div>
         {selected.review?.reviewed_at && <div style={{ marginTop: 7, fontSize: 9.5, color: "var(--ink-muted)" }}>Last verdict by {selected.review.reviewed_by || "human"} · {selected.review.reviewed_at}{selected.review.reason_code ? ` · ${selected.review.reason_code}` : ""}</div>}
       </section>}
+      <button data-testid="project-map-new-zone" type="button" onClick={onStartNew} style={{ width: "100%", justifyContent: "center", marginTop: 13, ...button("var(--cobalt)", "var(--cobalt)") }}>+ Zone</button>
     </>}
   </aside>;
 }

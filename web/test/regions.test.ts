@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyRegionCommand, mintRegionId, reviewRegion, sanitizeRegions } from "../src/lib/regions.js";
+import { applyRegionCommand, editRegionGeometry, mintRegionId, reviewRegion, sanitizeRegions } from "../src/lib/regions.js";
 
 const square = [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4], [0.1, 0.4]];
 const region = (over: Record<string, unknown> = {}) => ({
@@ -54,6 +54,26 @@ test("an explanation can be saved without changing the current verdict", () => {
   assert.equal(explained.review.status, "confirmed");
   assert.equal(explained.revision, 5);
   assert.equal(explained.review.note, "Scale confirmed against dimension string A-3.");
+});
+
+test("human geometry edits confirm the contour and preserve its correction context", () => {
+  const [needsReview] = sanitizeRegions([region({
+    id: "region:edit",
+    revision: 4,
+    review: { status: "needs_review", fields: { geometry: "needs_review", name: "confirmed" }, note: "Ignore the VCT hatch." },
+  })]);
+  const edited = editRegionGeometry(needsReview, [[0.1, 0.1], [0.5, 0.1], [0.5, 0.4], [0.1, 0.4]], {
+    reviewed_at: "2026-08-24T18:00:00.000Z",
+  });
+  assert.ok(edited);
+  assert.equal(edited.revision, 5);
+  assert.equal(edited.review.status, "confirmed");
+  assert.equal(edited.review.fields?.geometry, "confirmed");
+  assert.equal(edited.review.fields?.name, "confirmed");
+  assert.equal(edited.review.reason_code, "human_geometry_edit");
+  assert.equal(edited.review.note, "Ignore the VCT hatch.");
+  assert.deepEqual(edited.geometry.verts_norm[1], [0.5, 0.1]);
+  assert.equal(editRegionGeometry(needsReview, [[0, 0], [1, 1]], {}), null);
 });
 
 test("a complete region preserves the durable mapping contract", () => {

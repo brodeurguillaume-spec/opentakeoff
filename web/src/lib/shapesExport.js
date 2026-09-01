@@ -21,6 +21,7 @@ export function shapesDetail(conditions, shapes, sheetLabel) {
       case "surface_area":
       case "linear": area_sf = cp.area_sf || 0; lf = cp.perimeter_lf || 0; break;
       case "count": ea = cp.count || 1; break;
+      case "count_run": ea = cp.count || 0; break;
       default: break;
     }
     return {
@@ -30,6 +31,11 @@ export function shapesDetail(conditions, shapes, sheetLabel) {
       finish: cond?.finish_tag ?? "",
       role,
       area_sf, lf, ea,
+      guide_lf: role === "count_run" ? Number(cp.guide_lf) || 0 : 0,
+      unit_length_in: role === "count_run" ? Number(cp.unit_length_in ?? s.count_run?.unit_length_in) || 0 : 0,
+      joint_in: role === "count_run" ? Number(cp.joint_in ?? s.count_run?.joint_in) || 0 : 0,
+      nominal_total_in: role === "count_run" ? Number(cp.nominal_total_in) || 0 : 0,
+      installed_span_in: role === "count_run" ? Number(cp.installed_span_in) || 0 : 0,
       // recomputeShape's height semantics, mirrored: an explicit override wins
       // outright (even 0); a legacy shape without its own height reports the
       // condition height its wall SF was actually computed against.
@@ -42,8 +48,8 @@ export function shapesDetail(conditions, shapes, sheetLabel) {
   });
 }
 
-export function shapesToCsv(rows, projectName = "", brandName = "OpenTakeoff") {
-  const header = ["Shape", "Sheet", "Sheet ID", "Finish", "Role", "Area SF", "LF", "EA", "Height ft", "Height override", "Origin"];
+export function shapesToCsv(rows, projectName = "", brandName = "AnvilTrace") {
+  const header = ["Shape", "Sheet", "Sheet ID", "Finish", "Role", "Area SF", "LF", "EA", "Guide LF", "Unit length in", "Joint in", "Nominal total in", "Installed span in", "Height ft", "Height override", "Origin"];
   const lines = [
     "# Per-shape measured quantities — no multiplier or waste; deducts negative; LF on floor/deduct/surface rows is trace reference only (incl. openings) — linear rows alone sum to condition LF",
     header.map(esc).join(","),
@@ -51,7 +57,7 @@ export function shapesToCsv(rows, projectName = "", brandName = "OpenTakeoff") {
   for (const r of rows) {
     lines.push([
       r.shape_id, r.sheet, r.sheet_id, r.finish, r.role,
-      r.area_sf, r.lf, r.ea, r.height_ft,
+      r.area_sf, r.lf, r.ea, r.guide_lf, r.unit_length_in, r.joint_in, r.nominal_total_in, r.installed_span_in, r.height_ft,
       r.height_override ? "yes" : "",
       r.origin,
     ].map(esc).join(","));
@@ -64,7 +70,7 @@ export function shapesToJson(rows, projectName) {
   return {
     schema: "opentakeoff.shapes.v1",
     project_name: projectName || null,
-    generated_with: "OpenTakeoff",
+    generated_with: "AnvilTrace",
     shapes: rows,
   };
 }

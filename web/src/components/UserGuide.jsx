@@ -58,21 +58,22 @@ function Section({ title, children }) {
 }
 
 const START = [
-  ["Open a plan", "Drag a PDF, an image, or a whole .zip plan set onto the canvas — or click Load sample plan to use the bundled VA finish plan. Nothing leaves your machine."],
+  ["Open a plan", "Drag a PDF, an image, or a whole .zip plan set onto the canvas — or click the opening target to choose files. Nothing leaves your machine."],
   ["Set the scale first", "Every quantity depends on it. The Scale menu offers what the sheet's own title block states; hover it to preview a calibrated ruler on the drawing, or calibrate two points of a known dimension. Remembered per sheet."],
-  ["Add a condition", "A condition is a finish — CPT-1, LVT, base. Give it a tag, a waste %, and a colour. Press 1–9 to arm one."],
+  ["Add a takeoff item", "A takeoff item identifies what you are measuring — BR-1, RV-1, M1, or any project tag. Give it a name, a waste %, and a colour. Press 1–9 to arm one."],
   ["Measure", "One-Click a room and it selects itself; or trace by hand with Area, Rectangle, Linear or Count. In One-Click, ⏎ creates it."],
-  ["Read the report", "REPORT totals every condition, applies waste, and gives you order quantities, a buy list, and CSV / Excel export."],
+  ["Read the report", "REPORT totals every takeoff item, applies waste, and gives you order quantities, a buy list, and CSV / Excel export."],
 ];
 
 export const TOOLS = [
   [["O"], "One-Click Area — click inside a room, it selects itself"],
   [["A"], "Area"], [["R"], "Rectangle"], [["L"], "Linear"], [["Q"], "Curved Line"],
   [["S"], "Surface Area (walls)"], [["C"], "Count"],
-  [["D"], "Deduct shape (Cut Out)"], [["⇧", "D"], "Deduct rectangle"],
-  [["H"], "Highlighter"], [["K"], "Check a dimension against what the drawing says"],
+  [["E"], "Deduct polygon from the selected Area"], [["⇧", "E"], "Deduct rectangle from the selected Area"],
+  [["D"], "Automatic / free deduct polygon"], [["⇧", "D"], "Automatic / free deduct rectangle"],
+  [["H"], "Highlighter"], [["K"], "Persistent reference dimension; Ctrl+click adds another segment, final click without Ctrl completes"],
   [["V"], "Select"], [["G"], "Sheet gallery"],
-  [["1", "–", "9"], "Arm condition N"],
+  [["1", "–", "9"], "Arm takeoff item N"],
   [["hold", "M"], "Push-to-talk dictation — release runs it, Esc discards"],
 ];
 
@@ -81,7 +82,7 @@ export const DRAW = [
   [["⌫"], "Back out one step — the last point, then the picked vertex, the region, the selected shape, the markup"],
   [["⌘", "Z"], "Mid-trace pops the last point; otherwise undo"],
   [["⇧", "⌘", "Z"], "Redo"],
-  [["Esc"], "Back out one level — vertex pick first, then anything in progress"],
+  [["Esc"], "Back out one level — during a trace, remove one point; when empty, return to Select"],
   [["hold", "⇧"], "Force the 45° angle lock at any cursor angle"],
   [["⌥", "click"], "In One-Click: carve a cutout inside a selected space"],
   [["⇧", "click"], "Insert a vertex at an edge midpoint, and drag it"],
@@ -89,7 +90,8 @@ export const DRAW = [
 ];
 
 export const VIEW = [
-  [["scroll"], "Zoom toward the cursor"],
+  [["scroll"], "Zoom toward the cursor; in a stacked sheet set, scroll vertically"],
+  [["Ctrl", "scroll"], "Zoom toward the cursor in a stacked sheet set"],
   [["two-finger"], "Pan, both axes"],
   [["⇧", "scroll"], "Pan"],
   [["hold", "Space"], "Pan with any tool armed — as does middle-drag or right-drag"],
@@ -127,7 +129,7 @@ export default function UserGuide({ onClose }) {
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="OpenTakeoff user guide"
+        aria-label="Guide AnvilTrace"
         className="panel"
         style={{
           width: "min(760px, 100%)", background: "var(--paper-bright)", color: "var(--ink)",
@@ -135,7 +137,7 @@ export default function UserGuide({ onClose }) {
           boxShadow: "var(--shadow-2)",
         }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginBottom: 4 }}>
-          <strong style={{ fontFamily: "var(--f-display)", fontSize: 17, letterSpacing: "-0.02em" }}>How OpenTakeoff works</strong>
+          <strong style={{ fontFamily: "var(--f-display)", fontSize: 17, letterSpacing: "-0.02em" }}>Comment fonctionne AnvilTrace</strong>
           <button onClick={onClose} title="Close (Esc)"
             style={{ background: "none", border: "none", color: "var(--ink-soft)", fontSize: 18, cursor: "pointer", lineHeight: 1, padding: 4 }}>×</button>
         </div>
@@ -161,7 +163,7 @@ export default function UserGuide({ onClose }) {
 
         <div style={{ borderTop: "1px solid var(--ink-faint)", paddingTop: 14, fontSize: 12.5, color: "var(--ink-soft)", lineHeight: 1.5 }}>
           This is the short version. The full manual covers conditions, markups and RFIs, revisions,
-          the report and exports, the Agent panel, and driving OpenTakeoff from an AI agent over MCP —{" "}
+          the report and exports, the Agent panel, and driving AnvilTrace from an AI agent over MCP —{" "}
           <a href={GUIDE_URL} target="_blank" rel="noreferrer" style={{ color: "var(--cobalt)" }}>read the complete guide</a>.
         </div>
       </div>

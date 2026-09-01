@@ -1695,7 +1695,7 @@ test("verdicts in the marked set: glyphs drawn, sheet marked, and the cover tall
   // the cover states the split in so many words — read it back off the page
   const doc = await openPdf(pdf.data.path);
   const cover = positionedText(await doc.page(1)).map((t) => t.str).join(" ");
-  assert.match(cover, /Approval stamps: 0 estimator-approved · 2 agent-marked/);
+  assert.match(cover, /Approbations : 0 estimateur · 2 agent/);
   await doc.destroy();
 
   // a verdict alone marks its sheet — a sheet-point mark before any takeoff

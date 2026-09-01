@@ -90,7 +90,7 @@ function openDB() {
     req.onblocked = () => {
       settled = true;
       reject(Object.assign(
-        new Error("OpenTakeoff is open in another tab with older data — close it or reload."),
+        new Error("AnvilTrace is open in another tab with older data — close it or reload."),
         { name: "BlockedError" },
       ));
     };
@@ -111,7 +111,7 @@ function openDB() {
       if (req.error?.name === "VersionError") {
         // This build is OLDER than the database — a stale tab after a future bump.
         reject(Object.assign(
-          new Error("This tab is running an older OpenTakeoff — reload to update."),
+          new Error("This tab is running an older AnvilTrace — reload to update."),
           { name: "VersionError" },
         ));
       } else {
@@ -131,7 +131,7 @@ export function isStaleTabError(e) {
 // The one UI copy for stale-tab failures. TakeoffCanvas routes its message
 // tint on exact equality with this string, so every surface must use the
 // constant — a local paraphrase would silently render in the success color.
-export const STALE_TAB_MESSAGE = "OpenTakeoff was updated in another tab — reload this tab to continue.";
+export const STALE_TAB_MESSAGE = "AnvilTrace was updated in another tab — reload this tab to continue.";
 
 // Map raw store errors to copy the user can act on; falls back to the
 // error's own message for everything unrecognized.
@@ -188,13 +188,54 @@ async function sha256Hex(bytes) {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+// Project-scoped PDFs share the existing IndexedDB stores without a schema
+// migration: an impossible-on-disk NUL prefix keeps their internal keys apart
+// from anonymous/global file names. The length-prefixed project id makes the
+// mapping unambiguous even when an id itself contains ':' characters.
+const PROJECT_PDF_SENTINEL = "\u0000project:";
+const projectPdfPrefix = (projectId) => `${PROJECT_PDF_SENTINEL}${String(projectId).length}:${projectId}:`;
+const projectPdfName = (projectId, name) => `${projectPdfPrefix(projectId)}${name}`;
+
+async function listStoredPdfNames() {
+  return (await withDb((db) => tx(db, PDF_STORE, "readonly", (os) => os.getAllKeys()))) || [];
+}
+
+async function addStoredPdfBytes(storedName, inputBytes) {
+  const bytes = inputBytes instanceof ArrayBuffer
+    ? inputBytes
+    : ArrayBuffer.isView(inputBytes)
+      ? inputBytes.buffer.slice(inputBytes.byteOffset, inputBytes.byteOffset + inputBytes.byteLength)
+      : null;
+  if (!bytes) throw new TypeError("addPdfBytes expects an ArrayBuffer or typed-array view");
+  const hash = await sha256Hex(bytes);
+  const ts = Date.now();
+  const existing = await withDb((db) => tx(db, PDF_STORE, "readonly", (os) => os.get(storedName)));
+  if (!existing) {
+    await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.put({ name: storedName, bytes, hash, rev: 1, ts })));
+    return { name: storedName, rev: 1 };
+  }
+  const prevRev = existing.rev || 1;
+  const prevHash = existing.hash || await sha256Hex(existing.bytes);
+  if (prevHash === hash) {
+    if (!existing.hash || !existing.rev) {
+      await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.put({ ...existing, hash: prevHash, rev: prevRev, ts: existing.ts ?? ts })));
+    }
+    return { name: storedName, rev: prevRev, unchanged: true };
+  }
+  await withDb((db) => txAll(db, [PDF_STORE, REV_STORE], "readwrite", (t) => {
+    t.objectStore(REV_STORE).put({ key: revKey(storedName, prevRev), name: storedName, rev: prevRev, hash: prevHash, ts: existing.ts ?? ts, bytes: existing.bytes });
+    t.objectStore(PDF_STORE).put({ name: storedName, bytes, hash, rev: prevRev + 1, ts });
+  }));
+  return { name: storedName, rev: prevRev + 1, prev_rev: prevRev, revised: true };
+}
+
 export const localStore = {
   async listSheets() {
-    const names = await withDb((db) => tx(db, PDF_STORE, "readonly", (os) => os.getAllKeys()));
+    const names = await listStoredPdfNames();
     // preserve insertion order (IndexedDB getAllKeys sorts by key; we keep the
     // saved order from annotations.sheet_tabs at the canvas layer, so name-sort
     // here is fine for the gallery)
-    return (names || []).map((name) => ({ name }));
+    return names.filter((name) => typeof name === "string" && !name.startsWith(PROJECT_PDF_SENTINEL)).map((name) => ({ name }));
   },
 
   async loadPdfData(name) {
@@ -209,33 +250,14 @@ export const localStore = {
     // unrelated (possibly slow, file-sized) await. Same rule for the hash:
     // subtle.digest is async, and an IDB transaction commits the moment its
     // event loop drains, so ALL hashing happens outside every transaction.
-    const bytes = await file.arrayBuffer();
-    const hash = await sha256Hex(bytes);
-    const ts = Date.now();
-    const existing = await withDb((db) => tx(db, PDF_STORE, "readonly", (os) => os.get(file.name)));
-    if (!existing) {
-      await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.put({ name: file.name, bytes, hash, rev: 1, ts })));
-      return { name: file.name, rev: 1 };
-    }
-    // de-dupe by name, but never by silent overwrite: same bytes are a no-op,
-    // different bytes archive the old record as a revision first (CO-1).
-    // Records written before v3 carry no hash/rev — hash their bytes now and
-    // treat them as rev 1, so legacy sheets version correctly on first re-drop.
-    const prevRev = existing.rev || 1;
-    const prevHash = existing.hash || await sha256Hex(existing.bytes);
-    if (prevHash === hash) {
-      if (!existing.hash || !existing.rev) {
-        // backfill the legacy record's identity so the next compare is cheap
-        await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.put({ ...existing, hash: prevHash, rev: prevRev, ts: existing.ts ?? ts })));
-      }
-      return { name: file.name, rev: prevRev, unchanged: true };
-    }
-    // one transaction across both stores: archive + swap commit atomically
-    await withDb((db) => txAll(db, [PDF_STORE, REV_STORE], "readwrite", (t) => {
-      t.objectStore(REV_STORE).put({ key: revKey(file.name, prevRev), name: file.name, rev: prevRev, hash: prevHash, ts: existing.ts ?? ts, bytes: existing.bytes });
-      t.objectStore(PDF_STORE).put({ name: file.name, bytes, hash, rev: prevRev + 1, ts });
-    }));
-    return { name: file.name, rev: prevRev + 1, prev_rev: prevRev, revised: true };
+    return addStoredPdfBytes(file.name, await file.arrayBuffer());
+  },
+
+  // Byte-oriented sibling used by the GRUMP durable mirror so a very large
+  // File is read once, then the same buffer feeds IndexedDB and the project
+  // folder. Regular callers keep using addPdf(file).
+  async addPdfBytes(name, bytes) {
+    return addStoredPdfBytes(name, bytes);
   },
 
   async removePdf(name) {
@@ -402,7 +424,7 @@ export const localStore = {
   },
 };
 
-// A localStore instance whose ANNOTATIONS are scoped to a single project, so an
+// A localStore instance whose ANNOTATIONS and PDFs are scoped to one project, so an
 // opted-in cloud project keeps its own local-first annotation blob instead of
 // sharing the one global "annotations" key. This is the local half of the
 // local-first composite: annotations become per-project locally, while the cloud
@@ -413,11 +435,12 @@ export const localStore = {
 //   • folderId == null returns the SAME `localStore` object — the anonymous,
 //     browser-only app is byte-identical (same reference, same "annotations"
 //     key), so no importer, DB version, or migration changes.
-//   • Only loadAnnotations/saveAnnotations are re-scoped (key "annotations:<id>").
+//   • loadAnnotations/saveAnnotations use key "annotations:<id>".
 //     The existing global "annotations" blob simply IS the null-scope project.
-//   • PDFs and the browser-global libraries (templates/materials/stamps) stay
-//     GLOBAL — cloud mode routes PDFs to cloudStore, and the libraries are
-//     cross-project by design (see their key comments above).
+//   • PDF records/revisions use an internal project prefix. Legacy anonymous
+//     records remain untouched; a project's durable disk/Drive copy rehydrates
+//     its scoped cache on first launch after this change.
+//   • Libraries (templates/materials/stamps) stay browser-global by design.
 //   • Snapshots keep their explicit `project` argument (cloudStore/snapshotSync
 //     pass the scope), so they are untouched here.
 // Spreading `localStore` is safe: none of its methods use `this` (they close over
@@ -429,8 +452,37 @@ export function createLocalStore(folderId = null) {
   // "annotations" blob, NOT a distinct "annotations:" scope.
   if (folderId == null || folderId === "") return localStore;
   const annKey = ANN_KEY + ":" + folderId;
+  const pdfPrefix = projectPdfPrefix(folderId);
+  const scopedPdfName = (name) => projectPdfName(folderId, name);
+  const publicResult = (name, result) => ({ ...result, name });
   return {
     ...localStore,
+    async listSheets() {
+      const names = await listStoredPdfNames();
+      return names
+        .filter((name) => typeof name === "string" && name.startsWith(pdfPrefix))
+        .map((name) => ({ name: name.slice(pdfPrefix.length) }));
+    },
+    async loadPdfData(name) {
+      return localStore.loadPdfData(scopedPdfName(name));
+    },
+    async addPdf(file) {
+      const result = await addStoredPdfBytes(scopedPdfName(file.name), await file.arrayBuffer());
+      return publicResult(file.name, result);
+    },
+    async addPdfBytes(name, bytes) {
+      const result = await addStoredPdfBytes(scopedPdfName(name), bytes);
+      return publicResult(name, result);
+    },
+    async removePdf(name) {
+      return localStore.removePdf(scopedPdfName(name));
+    },
+    async listPdfRevisions(name) {
+      return localStore.listPdfRevisions(scopedPdfName(name));
+    },
+    async loadPdfRevisionData(name, rev) {
+      return localStore.loadPdfRevisionData(scopedPdfName(name), rev);
+    },
     async loadAnnotations() {
       const a = await withDb((db) => tx(db, META_STORE, "readonly", (os) => os.get(annKey)));
       return a || emptyAnnotations();

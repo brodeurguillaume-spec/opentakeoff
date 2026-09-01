@@ -5,7 +5,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../brand/icons.jsx";
 import ToolMenu from "./ToolMenu.jsx";
-import { conditionTotals, grandTotals, sheetTotals, sheetGroupedRows, labelGroupedRows, sheetLabelGroupedRows, round2, totalsToCsv, downloadText, materialsSummary, reportJson, hasMultipliers, BY_SHEET_BASE_NOTE } from "../lib/totals.js";
+import { conditionTotals, grandTotals, sheetTotals, sheetGroupedRows, labelGroupedRows, mapZoneGroupedRows, sheetLabelGroupedRows, round2, totalsToCsv, downloadText, materialsSummary, reportJson, hasMultipliers, BY_SHEET_BASE_NOTE } from "../lib/totals.js";
 import { TABLE_PROFILE, CSV_PROFILE, colGetter, customColProfile, specColProfile, laborColProfile, rollColProfile, partitionRowsBy, forceIncludeGroupCol, loadColPrefs, saveColPrefs, loadGroupBy, saveGroupBy, visibleCols, floorPerimeterLf, applyUnits } from "../lib/reportColumns.js";
 import { rollReportRows, seamLfByShape } from "../lib/rollTakeoff.js";
 import { areaVal, areaUnit, lenVal, lenUnit } from "../lib/units";
@@ -28,7 +28,7 @@ import { projectIdFromUrl } from "../lib/store.js";
 const num = (v, d = 1) => (Number(v) || 0).toLocaleString(undefined, { maximumFractionDigits: d });
 
 // the report's one caveat line — page-strip on every printed page + masthead
-const DISCLAIMER = "Quantities derived from drawings at stated scales; verify in field.";
+const DISCLAIMER = "Quantités tirées des plans selon les échelles indiquées; vérifier au chantier.";
 
 // one-line hints for the opt-in columns in the picker (waste hint sits under
 // the second waste checkbox so it reads once for the pair)
@@ -45,7 +45,7 @@ const sheetNum = (v, d = 1) => {
   return num(r, d);
 };
 
-export default function ReportPanel({ projectName, onProjectName, conditions, shapes, sheetLabel, onMarkedSet, markedSetDark, onClose, markups = [], rfis = [], scaleInfo = [], provenanceCounters = null, clientInfo = {}, onClientInfo, conditionColumns = [], shapeLabels = [], units = "imperial", rollByCond = null }) {
+export default function ReportPanel({ projectName, onProjectName, conditions, shapes, sheetLabel, onMarkedSet, markedSetDark, onClose, initialInfo = false, markups = [], rfis = [], regions = [], scaleInfo = [], provenanceCounters = null, clientInfo = {}, onClientInfo, conditionColumns = [], shapeLabels = [], units = "imperial", rollByCond = null }) {
   // memoized on the source arrays: project-name/client-info keystrokes re-render
   // the panel without touching conditions/shapes, so the totaling passes skip
   // imported report theme → { vars, name, warnings }. vars are spread onto this
@@ -82,13 +82,36 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   const seamCtx = useMemo(() => ({ seamByShape: seamLfByShape(rollByCond) }), [rollByCond]);
   const rows = useMemo(() => conditionTotals(conditions, shapes, seamCtx).filter((r) => r.shape_count > 0), [conditions, shapes, seamCtx]);
   const bySheet = useMemo(() => sheetTotals(conditions, shapes), [conditions, shapes]);
+  const condById = useMemo(() => new Map(conditions.map((condition) => [condition.id, condition])), [conditions]);
+  const deductionsBySheet = useMemo(() => {
+    const grouped = new Map();
+    for (const shape of shapes) {
+      if (shape.measure_role !== "deduct") continue;
+      const list = grouped.get(shape.sheet_id) || [];
+      list.push(shape);
+      grouped.set(shape.sheet_id, list);
+    }
+    return [...grouped.entries()].map(([sheet_id, deductions]) => ({ sheet_id, deductions }));
+  }, [shapes]);
   const g = useMemo(() => grandTotals(rows), [rows]);
   const matSummary = useMemo(() => materialsSummary(rows), [rows]);
   const [showContribute, setShowContribute] = useState(false);
-  const [showInfo, setShowInfo] = useState(false);
+  const [showInfo, setShowInfo] = useState(initialInfo);
   // whether the Marked Set PDF carries the markups. Default on; ORTHOGONAL to the
   // canvas markup-layer hide — that never changes the export, only this does.
   const [includeMarkups, setIncludeMarkups] = useState(true);
+  // A Marked Set can take several seconds. Keep its progress and any failure in
+  // the report itself instead of hiding the only useful diagnostic in the
+  // canvas status bar behind this full-screen panel.
+  const [markedSetStatus, setMarkedSetStatus] = useState({ phase: "idle", message: "" });
+  const downloadMarkedSet = async () => {
+    if (!onMarkedSet || markedSetStatus.phase === "building") return;
+    setMarkedSetStatus({ phase: "building", message: "Génération du jeu annoté…" });
+    const result = await onMarkedSet(includeMarkups);
+    setMarkedSetStatus(result?.ok
+      ? { phase: "done", message: `Téléchargé : ${result.filename}` }
+      : { phase: "error", message: `Échec du jeu annoté : ${result?.message || "erreur inconnue"}` });
+  };
   // bumped by the Project info modal on every company/branding save, so the
   // print masthead re-reads (a cheap localStorage parse + one meta-KV load)
   const [identityRev, setIdentityRev] = useState(0);
@@ -158,7 +181,10 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   // global string, so a leftover "label" opened on a label-less project (or a
   // template carrying it) must fall back to ungrouped, exactly as a stale
   // custom-column id does.
-  const groupBy = groupByRaw === "sheet" || (groupByRaw === "label" && shapeLabels.length > 0) || conditionColumns.some((cc) => cc.id === groupByRaw) ? groupByRaw : "";
+  const groupBy = groupByRaw === "sheet"
+    || (groupByRaw === "label" && shapeLabels.length > 0)
+    || (groupByRaw === "map-zone" && regions.length > 0)
+    || conditionColumns.some((cc) => cc.id === groupByRaw) ? groupByRaw : "";
   // grouping force-includes its column in the CSV/XLSX even when hidden in
   // the picker (D7) — a grouped report's export always carries its grouping
   const csvCols = forceIncludeGroupCol(visibleCols([...CSV_PROFILE, ...customCols, ...specCols, ...laborCols, ...rollCols], colPrefs), customCols, groupBy);
@@ -185,16 +211,19 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   // grouped precisely to put that value on the printed page, and the CSV
   // force-includes the column, so the two outputs must agree. Its subtotal is
   // still suppressed — it would duplicate the grand TOTAL directly below it.
-  const groupCol = groupBy && groupBy !== "sheet" ? conditionColumns.find((cc) => cc.id === groupBy) : null;
+  const groupCol = groupBy && !["sheet", "label", "map-zone"].includes(groupBy) ? conditionColumns.find((cc) => cc.id === groupBy) : null;
   const colGroups = useMemo(() => (groupCol ? partitionRowsBy(rows, groupCol, attrsByCond) : null), [rows, groupCol, attrsByCond]);
   const sheetGroups = useMemo(() => (groupBy === "sheet" ? sheetGroupedRows(conditions, shapes, seamCtx) : null), [groupBy, conditions, shapes, seamCtx]);
   // label mode: ORDERED per-bucket rows (waste + ×N per slice), already shaped
   // { value, label, rows, perimByCond } like the sheet groups after mapping.
   const labelGroups = useMemo(() => (groupBy === "label" ? labelGroupedRows(conditions, shapes, shapeLabels, seamCtx) : null), [groupBy, conditions, shapes, shapeLabels, seamCtx]);
+  const mapGroups = useMemo(() => (groupBy === "map-zone"
+    ? mapZoneGroupedRows(conditions, shapes, regions, seamCtx).map((group) => ({ ...group, label: group.sheet_id && sheetLabel ? `${sheetLabel(group.sheet_id)} · ${group.label}` : group.label }))
+    : null), [groupBy, conditions, shapes, regions, seamCtx, sheetLabel]);
   const groups = sheetGroups
     ? sheetGroups.map((gp) => ({ value: gp.sheet_id, label: sheetLabel ? sheetLabel(gp.sheet_id) : gp.sheet_id, rows: gp.rows, perimByCond: gp.perimByCond }))
-    : labelGroups || colGroups;
-  const grouped = Boolean(groups && (groups.length > 1 || ((groupCol || groupBy === "label") && groups.length === 1 && groups[0].value !== null)));
+    : labelGroups || mapGroups || colGroups;
+  const grouped = Boolean(groups && (groups.length > 1 || ((groupCol || groupBy === "label" || groupBy === "map-zone") && groups.length === 1 && groups[0].value !== null)));
   // exports always carry the by-label breakdown when any shape is labeled,
   // independent of the current group-by view; empty (→ CSV/JSON byte-unchanged)
   // for label-less projects.
@@ -209,8 +238,10 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   // the canvas chrome behind it and lets the report flow across pages
   useEffect(() => {
     document.body.classList.add("report-open");
-    return () => document.body.classList.remove("report-open");
-  }, []);
+    const previousTitle = document.title;
+    document.title = `${projectName || "Projet sans titre"} — AnvilTrace`;
+    return () => { document.body.classList.remove("report-open"); document.title = previousTitle; };
+  }, [projectName]);
 
   // columns popover closes on any click outside it
   useEffect(() => {
@@ -394,24 +425,25 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
     <div className="report-panel" style={{ ...theme.vars, position: "absolute", inset: 0, zIndex: 50, display: "flex", flexDirection: "column", background: "var(--paper-cream)" }}>
       <div className="report-toolbar" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: "1px solid var(--ink)", background: "var(--paper-bright)" }}>
         <Icon name="takeoffs" size={18} />
-        <strong style={{ fontFamily: "var(--f-display)", fontSize: 16, color: "var(--ink)" }}>Takeoff report</strong>
-        <input name="project-name" value={projectName} onChange={(e) => onProjectName(e.target.value)} placeholder="Project name (optional)"
+        <strong style={{ fontFamily: "var(--f-display)", fontSize: 16, color: "var(--ink)" }}>Rapport de prise de quantités</strong>
+        <input name="project-name" value={projectName} onChange={(e) => onProjectName(e.target.value)} placeholder="Nom du projet (facultatif)"
           className="field-input" style={{ width: 260, padding: "5px 9px", fontSize: 13 }} />
         <div style={{ flex: 1 }} />
         <button className="btn-ghost" onClick={() => setShowInfo(true)}
-          title="Your company identity and the client/job details for the print header and marked-set cover">Project info</button>
+          title="Identité de l’entreprise et renseignements du projet utilisés dans les exports">Informations du projet</button>
         {/* always rendered, even with zero custom columns — Sheet grouping
             is useful on its own */}
         <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "var(--ink)", whiteSpace: "nowrap" }}
-          title="Break the condition table into sections with subtotals">
-          Group:
+          title="Break the takeoff-item table into sections with subtotals">
+          Regrouper :
           <select name="report-group-by" value={groupBy} onChange={(e) => { setGroupByRaw(e.target.value); saveGroupBy(e.target.value); }}
-            style={{ padding: "5px 6px", border: "1px solid var(--ink-faint)", background: "transparent", fontSize: 12, maxWidth: 160 }}>
-            <option value="">None</option>
-            <option value="sheet">Sheet</option>
-            {shapeLabels.length > 0 && <option value="label">Label</option>}
+            style={{ padding: "5px 6px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 12, maxWidth: 180 }}>
+            <option style={{ background: "var(--paper-bright)", color: "var(--ink)" }} value="">Aucun</option>
+            <option style={{ background: "var(--paper-bright)", color: "var(--ink)" }} value="sheet">Feuille</option>
+            {shapeLabels.length > 0 && <option style={{ background: "var(--paper-bright)", color: "var(--ink)" }} value="label">Étiquette</option>}
+            {regions.length > 0 && <option style={{ background: "var(--paper-bright)", color: "var(--ink)" }} value="map-zone">Zone du Project Map</option>}
             {conditionColumns.map((cc) => (
-              <option key={cc.id} value={cc.id}>{columnLabel(cc)}</option>
+              <option style={{ background: "var(--paper-bright)", color: "var(--ink)" }} key={cc.id} value={cc.id}>{columnLabel(cc)}</option>
             ))}
           </select>
         </label>
@@ -422,7 +454,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
               <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
                 <strong style={{ fontFamily: "var(--f-display)", fontSize: 13 }}>Columns</strong>
                 <div style={{ flex: 1 }} />
-                <button onClick={applyLaborPreset} title="No-waste actuals per condition — hides SF/SY w/Waste, shows Total SF"
+                <button onClick={applyLaborPreset} title="No-waste actuals per takeoff item — hides SF/SY w/Waste, shows Total SF"
                   style={{ border: "none", background: "transparent", color: "var(--cobalt)", cursor: "pointer", fontSize: 11.5, padding: "0 10px 0 0" }}>Labor view</button>
                 <button onClick={() => { setColPrefs({}); saveColPrefs({}); }} title="Back to the default column set"
                   style={{ border: "none", background: "transparent", color: "var(--cobalt)", cursor: "pointer", fontSize: 11.5, padding: "0 10px 0 0" }}>Reset</button>
@@ -434,7 +466,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
               {TABLE_PROFILE.filter((c) => !c.locked && !c.defaultVisible).map(colCheckbox)}
               <div style={{ borderTop: "1px solid var(--ink-faint)", margin: "8px 0 4px", paddingTop: 6, fontFamily: "var(--f-mono)", fontSize: 9.5, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-muted)" }}>Custom columns</div>
               {customCols.length ? customCols.map(colCheckbox) : (
-                <div style={{ fontSize: 10.5, color: "var(--ink-muted)", lineHeight: 1.5 }}>No custom columns yet — define them from the condition bar in the canvas.</div>
+                <div style={{ fontSize: 10.5, color: "var(--ink-muted)", lineHeight: 1.5 }}>No custom columns yet — define them from the Takeoff Items panel in the canvas.</div>
               )}
               {/* read-only product-spec columns — only shown when a schedule
                   import attached spec data to at least one condition */}
@@ -554,7 +586,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
           items={[
             { section: "Report" },
             { id: "csv", icon: "document", label: "CSV", disabled: !rows.length, onSelect: exportCsv },
-            { id: "xlsx", icon: "document", label: "Excel", disabled: !rows.length, title: "Excel workbook — Conditions / By sheet / Materials / Shapes", onSelect: exportXlsx },
+            { id: "xlsx", icon: "document", label: "Excel", disabled: !rows.length, title: "Excel workbook — Takeoff Items / By sheet / Materials / Shapes", onSelect: exportXlsx },
             { id: "json", icon: "document", label: "JSON", disabled: !rows.length && !markups.length && !rfis.length, title: "JSON — works markups-only / RFI-only too", onSelect: exportJson },
             { section: "Shapes" },
             { id: "shapes-csv", icon: "document", label: "Shapes CSV", disabled: !shapes.length, title: "Per-shape measured quantities — no multiplier, no waste", onSelect: exportShapesCsv },
@@ -562,19 +594,25 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
           ]}
         />
         <ToolMenu
-          title="Print the report, or generate the marked-set PDF"
+          title="Imprimer le rapport ou générer le jeu de plans annoté"
           disabled={!rows.length && !markups.length && !rfis.length /* both items are disabled exactly here: with no rows/rfis, the marked-set condition also collapses to true */}
-          face={<span>Print</span>}
+          face={<span>Imprimer</span>}
           items={[
-            { id: "print", label: "Print report", disabled: !rows.length && !markups.length && !rfis.length, title: "Print the on-screen report (browser print / save as PDF)", onSelect: () => window.print() },
+            { id: "print", label: "Imprimer le rapport", disabled: !rows.length && !markups.length && !rfis.length, title: "Imprimer le rapport ou l’enregistrer en PDF", onSelect: () => window.print() },
             ...(onMarkedSet ? [
               "divider",
-              { section: "Marked set" },
-              ...(markups.length > 0 ? [{ id: "inc-markups", label: "Include markups", checked: includeMarkups, stayOpen: true, title: "Include your markups (clouds, callouts, notes, highlights) in the Marked Set PDF. Independent of the canvas layer toggle.", onSelect: () => setIncludeMarkups((v) => !v) }] : []),
-              { id: "marked-set", icon: "document", label: `Download marked set${markedSetDark ? " ☾" : ""}`, disabled: !rows.length && (!includeMarkups || !markups.length) && !rfis.length, title: `Distribution PDF — marked sheets with the takeoff burned in, plus a legend cover${markedSetDark ? " (dark, following your view)" : ""}`, onSelect: () => onMarkedSet(includeMarkups) },
+              { section: "Jeu de plans annoté" },
+              ...(markups.length > 0 ? [{ id: "inc-markups", label: "Inclure les annotations", checked: includeMarkups, stayOpen: true, title: "Inclure nuages, notes, flèches et surlignages dans le PDF.", onSelect: () => setIncludeMarkups((v) => !v) }] : []),
+              { id: "marked-set", icon: "document", label: markedSetStatus.phase === "building" ? "Génération en cours…" : `Télécharger le jeu annoté${markedSetDark ? " ☾" : ""}`, disabled: markedSetStatus.phase === "building" || (!rows.length && (!includeMarkups || !markups.length) && !rfis.length), title: `PDF de distribution — feuilles annotées, quantités et registre des déductions${markedSetDark ? " (mode sombre)" : ""}`, onSelect: downloadMarkedSet },
             ] : []),
           ]}
         />
+        {markedSetStatus.phase !== "idle" && (
+          <span role="status" title={markedSetStatus.message}
+            style={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5, color: markedSetStatus.phase === "error" ? "var(--c-danger)" : markedSetStatus.phase === "done" ? "var(--c-positive)" : "var(--ink-muted)" }}>
+            {markedSetStatus.message}
+          </span>
+        )}
         {rfis.length > 0 && (
           <>
             <button className="btn-ghost" onClick={exportRfisCsv}
@@ -584,7 +622,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
           </>
         )}
         <button className="btn-primary" onClick={() => setShowContribute(true)} disabled={!rows.length}
-          title="Optionally contribute this takeoff's derived data to the open flooring model">
+          title="Contribution facultative des données dérivées — fonctionnalité actuellement désactivable">
           <Icon name="oneClick" size={13} />Contribute
         </button>
         <button onClick={onClose} title="Back to the canvas (Esc)"
@@ -598,7 +636,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
             the top of every printed page (screen hides it) — a fixed footer would
             overlap the last row of intermediate pages */}
         <table className="report-flow"><thead><tr><td>
-          {projectName || "Untitled project"} — {DISCLAIMER}
+          {projectName || "Projet sans titre"} — {DISCLAIMER}
         </td></tr></thead><tbody><tr><td>
         {/* print-only masthead — hidden on screen via app.css. Title-block header
             (logo/firm row · project title · bordered fact grid), the drafting-
@@ -624,19 +662,19 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
                 <div style={{ fontFamily: "var(--f-display)", fontWeight: 700, fontSize: 12.5, lineHeight: 1.15 }}>{brand.brandName}</div>
               )}
             </div>
-            <div style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--ink-muted)", whiteSpace: "nowrap" }}>Takeoff Report</div>
+            <div style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--ink-muted)", whiteSpace: "nowrap" }}>Rapport de quantités</div>
           </div>
 
           {/* project title */}
-          <div style={{ fontFamily: "var(--f-display)", fontSize: 25, fontWeight: 700, letterSpacing: "0.005em", textTransform: "uppercase", lineHeight: 0.98, margin: "11px 0 9px" }}>{projectName || "Untitled project"}</div>
+          <div style={{ fontFamily: "var(--f-display)", fontSize: 25, fontWeight: 700, letterSpacing: "0.005em", textTransform: "uppercase", lineHeight: 0.98, margin: "11px 0 9px" }}>{projectName || "Projet sans titre"}</div>
 
           {/* title-block fact grid */}
           {(() => {
             const cells = [
               ["Client", clientInfo.client_name],
-              ["Reference", clientInfo.reference],
+              ["Référence", clientInfo.reference],
               ["Date", clientInfo.date || new Date().toLocaleDateString()],
-              ["Prepared by", brand.brandName],
+              ["Préparé par", brand.brandName],
             ];
             return (
               <div style={{ display: "grid", gridTemplateColumns: `repeat(${cells.length}, 1fr)`, border: "1px solid var(--ink)", marginBottom: hasClient && clientInfo.client_address ? 8 : 12 }}>
@@ -658,9 +696,9 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
           {/* meta footer: scale provenance · attribution · disclaimer */}
           <div style={{ fontFamily: "var(--f-mono)", fontSize: 10, color: "var(--ink-muted)", lineHeight: 1.6, borderTop: "1px solid var(--ink-faint)", paddingTop: 6, marginBottom: 12 }}>
             {scaleInfo.map((si) => (
-              <div key={si.sheet_id}>{sheetLabel ? sheetLabel(si.sheet_id) : si.sheet_id} — {!si.scale_source || si.scale_source === "unknown" ? "scale set — provenance unrecorded" : si.scale_source}{si.scale_confirmed === false ? <span style={{ color: "var(--c-warning)", fontWeight: 700 }}> · agent-set, UNCONFIRMED</span> : null}</div>
+              <div key={si.sheet_id}>{sheetLabel ? sheetLabel(si.sheet_id) : si.sheet_id} — {!si.scale_source || si.scale_source === "unknown" ? "échelle définie — provenance non enregistrée" : si.scale_source}{si.scale_confirmed === false ? <span style={{ color: "var(--c-warning)", fontWeight: 700 }}> · définie par l’agent, NON CONFIRMÉE</span> : null}</div>
             ))}
-            <div>Generated {new Date().toLocaleDateString()}</div>
+            <div>Généré le {new Date().toLocaleDateString("fr-CA")}</div>
             <div>{DISCLAIMER}</div>
           </div>
         </div>
@@ -670,7 +708,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
         {!rows.length ? (
           markups.length ? null : (
             <div style={{ padding: 48, textAlign: "center", color: "var(--ink-muted)" }}>
-              Nothing measured yet — trace some areas, then come back for the breakdown.
+              Aucune mesure pour le moment — crée un Produit puis commence à dessiner.
             </div>
           )
         ) : (
@@ -682,7 +720,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
               the partition degenerates to one group. */}
           {grouped && (
             <p style={{ maxWidth: 980, margin: "0 auto 8px", fontSize: 11.5, color: "var(--ink-muted)" }}>
-              Grouped by <strong>{groupCol ? columnLabel(groupCol) : groupBy === "label" ? "label" : "sheet"}</strong>
+              Regroupé par <strong>{groupCol ? columnLabel(groupCol) : groupBy === "label" ? "étiquette" : groupBy === "map-zone" ? "zone du Project Map" : "feuille"}</strong>
             </p>
           )}
           <table style={{ width: "100%", maxWidth: 980, margin: "0 auto", borderCollapse: "collapse", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)" }}>
@@ -761,7 +799,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
         )}
         {rows.length > 0 && (
           <p style={{ maxWidth: 980, margin: "14px auto 0", fontSize: 11.5, color: "var(--ink-muted)", lineHeight: 1.6 }}>
-            <strong>{AU} w/Waste</strong> = measured quantity × waste %. Waste is set per condition in the canvas. Wall {AU} comes from Surface-Area
+            <strong>{AU} w/Waste</strong> = measured quantity × waste %. Waste is set per takeoff item in the canvas. Wall {AU} comes from Surface-Area
             traces (run × height); Border {AU} from Linear runs with a thickness.{M ? " Supporting-material coverage rates stay as entered (SF/LF-based)." : ""}
             {tableCols.some((c) => c.key === "perimeter_ref") && (
               <> Perim {LU} (ref) sums floor-trace perimeters — includes door openings and shared walls; reference only, never totaled or waste-adjusted.</>
@@ -775,17 +813,17 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
         )}
         {rows.length > 0 && bySheet.length > 0 && (
           <div style={{ maxWidth: 980, margin: "26px auto 0" }}>
-            <h3 style={{ fontFamily: "var(--f-display)", fontSize: 12, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink)", margin: "0 0 10px", paddingBottom: 5, borderBottom: "1.25px solid var(--ink)" }}>By sheet</h3>
+            <h3 style={{ fontFamily: "var(--f-display)", fontSize: 12, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink)", margin: "0 0 10px", paddingBottom: 5, borderBottom: "1.25px solid var(--ink)" }}>Par feuille</h3>
             {bySheet.map((gp) => (
               <div key={gp.sheet_id} style={{ margin: "0 0 14px" }}>
                 <h3 style={{ fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.06em", color: "var(--ink-muted)", margin: "0 0 6px" }}>{sheetLabel ? sheetLabel(gp.sheet_id) : gp.sheet_id}</h3>
                 <table style={{ width: "100%", borderCollapse: "collapse", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)" }}>
                   <thead>
                     <tr>
-                      <th style={{ ...th, textAlign: "left" }}>Finish</th>
-                      <th style={th}>Floor {AU}</th>
-                      <th style={th}>Wall {AU}</th>
-                      <th style={th}>Border {AU}</th>
+                      <th style={{ ...th, textAlign: "left" }}>Produit</th>
+                      <th style={th}>Surface {AU}</th>
+                      <th style={th}>Mur {AU}</th>
+                      <th style={th}>Bordure {AU}</th>
                       <th style={th}>{LU}</th>
                       <th style={th}>EA</th>
                     </tr>
@@ -812,12 +850,41 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
               </div>
             ))}
             <p style={{ margin: "10px auto 0", fontSize: 11.5, color: "var(--ink-muted)", lineHeight: 1.6 }}>
-              Base quantities as measured per sheet — waste not applied.
+              Quantités de base mesurées par feuille — pertes non appliquées.
               {hasMultipliers(bySheet) && (
                 // the shared note + a screen-only reconcile clause (CSV/PDF omit it)
                 <> {BY_SHEET_BASE_NOTE} — sheet subtotals × multiplier reconcile to the condition table.</>
               )}
             </p>
+          </div>
+        )}
+        {deductionsBySheet.length > 0 && (
+          <div style={{ maxWidth: 980, margin: "26px auto 0", breakBefore: "auto" }}>
+            <h3 style={{ fontFamily: "var(--f-display)", fontSize: 12, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink)", margin: "0 0 10px", paddingBottom: 5, borderBottom: "1.25px solid var(--ink)" }}>Registre des déductions</h3>
+            {deductionsBySheet.map((group) => (
+              <div key={group.sheet_id} style={{ margin: "0 0 14px", breakInside: "avoid" }}>
+                <h3 style={{ fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.06em", color: "var(--ink-muted)", margin: "0 0 6px" }}>{sheetLabel ? sheetLabel(group.sheet_id) : group.sheet_id}</h3>
+                <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "collapse", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)" }}>
+                  <thead><tr>
+                    <th style={{ ...th, width: "22%", textAlign: "left" }}>Ouverture</th>
+                    <th style={{ ...th, width: "22%", textAlign: "left" }}>Produit</th>
+                    <th style={{ ...th, width: "22%", textAlign: "left" }}>ID de la déduction</th>
+                    <th style={{ ...th, width: "24%", textAlign: "left" }}>ID parent</th>
+                    <th style={{ ...th, width: "10%" }}>Déduit</th>
+                  </tr></thead>
+                  <tbody>{group.deductions.map((shape) => {
+                    const product = condById.get(shape.condition_id);
+                    return <tr key={shape.id}>
+                      <td style={{ ...td, textAlign: "left", overflowWrap: "anywhere" }}>{shape.opening_name || "Déduction sans nom"}</td>
+                      <td style={{ ...td, textAlign: "left", overflowWrap: "anywhere" }}>{product?.finish_tag || "Produit inconnu"}</td>
+                      <td style={{ ...td, textAlign: "left", fontFamily: "var(--f-mono)", fontSize: 9.5, overflowWrap: "anywhere" }}>{shape.id}</td>
+                      <td style={{ ...td, textAlign: "left", fontFamily: "var(--f-mono)", fontSize: 9.5, overflowWrap: "anywhere", color: shape.cuts_shape_id ? "var(--ink)" : "var(--c-warning)" }}>{shape.cuts_shape_id || "NON ASSOCIÉ"}</td>
+                      <td style={td}>−{num(areaVal(Number(shape.computed?.area_sf) || 0, units))} {AU}</td>
+                    </tr>;
+                  })}</tbody>
+                </table>
+              </div>
+            ))}
           </div>
         )}
         {markups.some((m) => m.type !== "svg") && (
@@ -1115,7 +1182,7 @@ function ContributeModal({ conditions, shapes, scaleInfo = [], provenanceCounter
     setState("sending"); setMsg("");
     try {
       await sendContribution(buildContribution({ conditions, shapes, scaleInfo, counters: provenanceCounters }), contributor.trim());
-      setState("done"); setMsg("Thank you — your takeoff is now helping train the open flooring model.");
+      setState("done"); setMsg("Merci — les données dérivées ont été transmises au modèle de construction partagé.");
     } catch (e) {
       setState("error"); setMsg(e.message || String(e));
     }
@@ -1126,10 +1193,10 @@ function ContributeModal({ conditions, shapes, scaleInfo = [], provenanceCounter
       <div onClick={(e) => e.stopPropagation()} className="panel" style={{ width: 520, maxWidth: "100%", maxHeight: "90%", overflow: "auto", background: "var(--paper-bright)", boxShadow: "var(--shadow-2)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--ink)" }}>
           <Icon name="oneClick" size={16} />
-          <strong style={{ fontFamily: "var(--f-display)", fontSize: 15 }}>Contribute to the open flooring model</strong>
+          <strong style={{ fontFamily: "var(--f-display)", fontSize: 15 }}>Contribuer au modèle de construction partagé</strong>
         </div>
         <div style={{ padding: "16px", fontSize: 13, lineHeight: 1.6, color: "var(--ink)" }}>
-          <p style={{ marginTop: 0 }}>Help grow a shared, flooring-tuned open model. We send only the <strong>derived takeoff</strong>:</p>
+          <p style={{ marginTop: 0 }}>Aider à améliorer un modèle de construction partagé. Seules les <strong>données dérivées du take-off</strong> sont transmises :</p>
           <ul style={{ margin: "0 0 10px", paddingLeft: 18 }}>
             <li>condition labels, shape types, and quantities (SF / LF / EA)</li>
             <li>normalized room geometry (shape only — no scale, no location)</li>
@@ -1151,7 +1218,7 @@ function ContributeModal({ conditions, shapes, scaleInfo = [], provenanceCounter
           </label>
           <label style={{ display: "flex", gap: 8, alignItems: "flex-start", margin: "12px 0", cursor: "pointer" }}>
             <input name="attest" type="checkbox" checked={attest} onChange={(e) => setAttest(e.target.checked)} style={{ marginTop: 3 }} />
-            <span>I have the right to share this takeoff data and am contributing it to the open flooring model.</span>
+            <span>J’ai le droit de partager ces données de take-off et je consens à les transmettre au modèle de construction partagé.</span>
           </label>
           {msg && <p style={{ fontSize: 12.5, color: state === "error" ? "var(--c-danger)" : "var(--c-positive)" }}>{msg}</p>}
         </div>

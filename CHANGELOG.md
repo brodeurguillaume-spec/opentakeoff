@@ -5,6 +5,113 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 ## Unreleased — GRUMP loopback bridge
 
 ### Added
+- **Sheets can open as a top-to-bottom working set.** Select 2–12 pages in the
+  gallery and open them stacked in the chosen order; the first page opens at a
+  readable fit, the wheel scrolls the set, and `Ctrl`+wheel zooms around the
+  pointer. Each page remains an independent sheet with its own scale, products,
+  quantities and markups, and the saved project restores the vertical layout.
+- **`K` is now a persistent reference-dimension markup.** Two clicks place one
+  dimension and return to Select; holding `Ctrl` while clicking extends a
+  multi-segment chain whose individual lengths and total remain on the plan.
+  Reference dimensions stay deliberately below takeoff geometry in click
+  priority and do not enter quantities.
+- **A project now has an explicit opening/deduction library.** A selected deduction can be named and
+  saved on demand after tracing, or a saved opening can be armed before placement against a selected
+  parent Area. Templates store real-foot geometry, so the same door or window places at the right
+  size across calibrated sheets. Nothing prompts or auto-saves on every deduction. Report and Jeu de
+  plans annoté exports now list deductions after each sheet with opening name, deduction ID and
+  parent shape ID.
+- **Creating a Product is intentionally name-only.** `+ Produit` creates and activates it
+  immediately; type, materials and the rest of the fiche are optional follow-up data. Fresh projects
+  no longer auto-load the legacy flooring Products or stamps.
+- **The Jalon 21 manual workflow is more resilient.** `E` now reads the current selected Area instead
+  of a stale hotkey closure, right-drag release/context menus are contained across canvas overlays,
+  and lost pointer capture recovers cleanly.
+- **Sheet navigation keeps completed PDF tiles warm.** Changing sheets cancels obsolete in-flight
+  work but retains the bounded LRU cache and caps parsed worker documents, making revisits faster
+  without allowing memory to grow indefinitely.
+- **Manual geometry can be started before scale is known.** Area, Rectangle, Linear and Surface
+  shapes persist with an explicit pending-scale receipt and zero provisional quantity; setting the
+  sheet scale later recalculates them. Physical Count/opening templates still require calibration.
+- **Human deliverables now present as AnvilTrace in French.** The Jeu de plans annoté and Report use
+  dedicated Product/quantity lanes, avoid long-name overlap, expose project information from the
+  main canvas, and use the trade-neutral `Surface SF` label instead of flooring wording.
+- **Répartition linéaire turns one measured guide into a fabrication count.** Configure a
+  Product's nominal piece length, visual height, tag and joint (1/2 inch by default), then trace
+  two points. OTO uses `ceil(guide ÷ piece length)`, lays the resulting pieces out with real gaps,
+  and centres the complete installed span on the guide. The takeoff remains one editable parent
+  shape and reports EA—not LF—while CSV/JSON and Marked Set PDF preserve its guide, unit length,
+  joints, nominal total and installed span. GRUMP can inventory/render the role but explicitly
+  refuses geometry edits until its authoring tool is ready.
+- **Product appearance is now estimator-controlled without changing quantities.** Each Product
+  carries a 0–100% fill-opacity setting and a 0.5–8 px visual outline width. The outline stays
+  constant on screen while zooming, and Marked Set PDF export preserves both settings.
+- **The first Count for a Product now opens a reusable symbol setup.** Enter X/Y dimensions in
+  inches, a visible tag and an optional nominal length; OTO places the calibrated footprint at the
+  sheet scale and reuses it for later Count clicks. Vertex edits still replace that Product's saved
+  footprint. Human-facing controls now say **Produit** while the durable/API key remains
+  `condition` for backward compatibility, and the Product-name editor is wide enough for real tags.
+- **Count is now a calibrated, editable per-item footprint instead of only a fixed pin.** A new
+  Count starts as a 1′ × 1′ square, remains one EA, exposes ordinary vertex/edge editing, and the
+  edited real-world footprint is remembered on that Takeoff Item for subsequent pages/scales.
+  Takeoff Items also carry an optional nominal Length stored in inches. Existing one-point counts
+  remain readable, and Marked Set PDFs preserve the new footprint.
+- **Linked deductions no longer steal ordinary selection from takeoffs drawn above them.** Their
+  interior is ignored by broad picking; a deliberate click on one unique visible contour still
+  selects that contour, while intersections use the normal z-order. Moving a parent Area now moves
+  every linked deduction and restore snapshot atomically in the same undo step.
+- **The flooring-specific roll-goods editor is dormant in the AI Takeoff daily UI.** The existing
+  engine and persisted data remain intact behind one feature flag, so it can be re-enabled later
+  without deleting project information.
+- **Repeated-deduction rule suggestions are now optional and off by default.** The correction-rule
+  engine remains intact, but its automatic post-Cut-Out banner appears only when enabled from the
+  `⋯` menu. Switching it off also clears any temporary offer/preview without touching takeoffs or
+  persisted rules.
+- **Markup notes are now truly multiline and editable from the Markups panel.** The pencil opens a
+  resizable textarea; `Enter` saves, `Alt+Enter` inserts a persisted line break, and `Esc` cancels.
+  The on-canvas editor, hit target, saved JSON, live SVG and Marked Set PDF preserve the same lines.
+- **Project Map zones now organize the takeoff without duplicating geometry.** The Columns tab
+  exposes a compact sheet/parent hierarchy, and Report can group quantities by confirmed semantic
+  zone. Nested zones use the smallest enclosing zone; crossings, drafts and rejected zones remain
+  explicitly **Unmapped** instead of being classified by guesswork.
+- **The left Markups rail can now stay expanded.** Its chevron pins/unpins the individual markup
+  tools, and rail tooltips appear only after 1.25 seconds of stillness, disappear on movement, and
+  retire after three seconds so they do not cover the drawing during normal work.
+- **Live imperial drawing feedback gains half-inch resolution at 350% zoom and above.** Rectangle
+  keeps `W × H · area` visible while tracing, and condition-hover summaries yield to every active
+  measuring tool.
+- **Human-facing takeoff vocabulary now says “Takeoff Items.”** The durable/API field remains
+  `conditions` for backward compatibility. The obsolete typed Command field is no longer in the
+  toolbar; push-to-talk keeps the same deterministic local grammar.
+- **Sheets can now be renamed and rotated without leaving the plan set.** Each gallery card has a
+  persistent manual page name, while any selection can rotate 90° left/right or reset to the PDF
+  orientation. The saved quarter-turn is one real visual coordinate frame: PDF tiles, thumbnails,
+  text extraction, takeoffs, deductions, markups, approval seals, Project Map regions, evidence,
+  multi-scale axes and Marked Set export all follow together. Pages already used by a stitched
+  surface refuse rotation until that stitch is removed, so its match-line geometry cannot drift.
+- **The Sheets gallery has Select all.** The full plan set can be opened as tabs or receive a batch
+  rotation in one action; the existing 2–4 sheet limit still guards side-by-side and stitch modes.
+- **The empty-project screen is project-neutral.** The bundled floor-finish sample promotion is no
+  longer shown; the direct plan drop target and Apache/Kentucky AI credit remain.
+- **Project Map drawing now has an explicit hand-off and a naming queue.** The blue **+ Zone**
+  button closes the desk while the contour is traced, turns Map amber as a visible armed-state
+  receipt, and reopens the naming card when Finish completes the geometry. Saving is a blue,
+  explicit action; an optional checkbox records that GRUMP must determine the zone name later.
+- **Escape now retreats through manual drawing one click at a time.** Area, linked/free deduct,
+  linear, surface, rectangle, Zone and Project Map traces keep their current tool armed while each
+  `Esc` removes one point. Once no point remains, the next `Esc` returns to Select; `V` exits a
+  trace directly. All buttons also provide a short press/focus response instead of feeling inert.
+- **Manual deductions can now bind explicitly to the selected Area.** Select a floor Area and press
+  `E` (polygon) or `Shift+E` (rectangle): the cut must remain inside that exact parent, inherits its
+  condition, and creates a real geometric hole. Vertex edits, whole-shape moves, Tidy, duplication,
+  deletion, undo and redo update the red opening record and the parent geometry atomically. Invalid
+  edits are refused and restored instead of silently desynchronizing the visible cut from net SF.
+  `D` / `Shift+D` remain the deliberate automatic/free path and preserve arithmetic-only fallback.
+- **Existing Project Map contours now have a real vertex editor.** `Edit details & points` reveals
+  round move/delete grips and edge diamonds that insert a point. A completed correction advances
+  the region revision, confirms the geometry as a human decision, re-prices affected scale-zone
+  takeoffs through the existing ambiguity gate, and remains undoable. Full replacement is now
+  labelled **Manual redraw** and explicitly says it is a human Map trace rather than a GRUMP retry.
 - **GRUMP can now land a persistent Project Map proposal without creating takeoff.** The loopback
   bridge accepts the server-owned `region.proposed` event, waits for project hydration when needed,
   inserts the normalized candidate on its source sheet, opens Map with the outline selected, and
@@ -26,6 +133,21 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 - **The bridge now tells GRUMP which PDF and sheet are actually visible.** Document, active sheet, and side-by-side sheet IDs are published as transient context rather than journaled takeoff facts. This lets the shell filter its durable proposal queue without deleting hidden work; selecting a proposal on another open sheet navigates there before applying the temporary highlight.
 
 ### Fixed
+- **A long-lived AnvilTrace window no longer loses Marked Set export after a rebuild.** The core
+  PDF library now ships in the application bundle instead of a disposable lazy-loaded hash chunk.
+  Export progress and failures also remain visible inside the Report panel, so a failed download
+  explains itself instead of disappearing in the canvas status bar behind the report.
+- **Long Marked Set project titles no longer cross the company logo.** The cover reserves a fixed
+  identity lane at right, wraps the project title to two metric-fitted lines at left, and moves the
+  client metadata down with the title when that second line is needed.
+- **An empty GRUMP project now publishes an honest no-document heartbeat.** Before the first PDF
+  is opened, blank Canvas sheet fields are normalized to the bridge contract's `null` / empty-list
+  form instead of making the shell report a false synchronization error.
+- **A fresh local GRUMP project no longer inherits every PDF cached by the browser.** IndexedDB PDF
+  records and their revision trails are now namespaced per project while anonymous legacy records
+  and browser-global material/template/stamp libraries remain untouched. The durable project
+  `plans` folder rehydrates the scoped cache. GRUMP imports also read a large File only once and
+  reuse those bytes for IndexedDB plus the durable mirror instead of materializing it twice.
 - **A historical GRUMP Project Map proposal can no longer roll back a human review on reload.**
   The append-only bridge may replay an older `region.proposed` event after the Canvas has already
   hydrated a newer operator-reviewed region from durable project storage. The Canvas now applies a

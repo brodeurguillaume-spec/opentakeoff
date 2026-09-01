@@ -107,6 +107,10 @@ export interface RegionReviewOptions {
   note?: string;
 }
 
+export interface RegionGeometryEditOptions extends RegionReviewOptions {
+  status?: RegionReviewStatus;
+}
+
 const PURPOSES = new Set<string>(REGION_PURPOSES);
 const STATUSES = new Set<string>(REGION_REVIEW_STATUSES);
 const MAX_TEXT = 2048;
@@ -407,6 +411,41 @@ export function reviewRegion(
       reviewed_by: reviewer,
       reviewed_at: now,
       ...(reasonCode ? { reason_code: reasonCode } : {}),
+      ...(note ? { note } : {}),
+    },
+  };
+  const [sanitized] = sanitizeRegions([next]);
+  return sanitized || null;
+}
+
+/** Replace one saved contour after a human handle edit or full redraw. Geometry
+ * is sanitized through the same gate as import/hydrate, the region revision is
+ * advanced once, and the audit record says the human confirmed this boundary.
+ * The caller still owns command dispatch/undo and scale-zone repricing. */
+export function editRegionGeometry(
+  value: PlanRegion,
+  vertsNorm: unknown,
+  options: RegionGeometryEditOptions = {},
+): PlanRegion | null {
+  const [region] = sanitizeRegions([value]);
+  const geometry = sanitizeGeometry({ type: "polygon", verts_norm: vertsNorm });
+  if (!region || !geometry) return null;
+  const now = text(options.reviewed_at) || new Date().toISOString();
+  const reviewer = text(options.reviewed_by) || "human";
+  const reasonCode = text(options.reason_code) || "human_geometry_edit";
+  const note = text(options.note, MAX_TEXT);
+  const status = options.status && STATUSES.has(options.status) ? options.status : "confirmed";
+  const next: PlanRegion = {
+    ...region,
+    geometry,
+    revision: region.revision + 1,
+    review: {
+      ...region.review,
+      status,
+      fields: { ...(region.review.fields || {}), geometry: status },
+      reviewed_by: reviewer,
+      reviewed_at: now,
+      reason_code: reasonCode,
       ...(note ? { note } : {}),
     },
   };

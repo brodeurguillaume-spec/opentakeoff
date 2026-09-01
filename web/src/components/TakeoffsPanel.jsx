@@ -1,5 +1,5 @@
-// TakeoffsPanel — the docked conditions panel on the canvas's right edge
-// (reflows the canvas, not an overlay): every condition with its running
+// TakeoffsPanel — the docked takeoff-items panel on the canvas's right edge
+// (reflows the canvas, not an overlay): every item with its running
 // totals and inline properties, plus the template Library, material-library
 // Materials (#47/#48), and custom Columns tabs. Extracted from TakeoffCanvas
 // and memoized so canvas-only renders (the
@@ -39,6 +39,11 @@ import { ROLL_FLOORING_TYPES } from "../lib/rollgoods.js";
 import { hasRollSetup, mintRollSetup } from "../lib/rollTakeoff.js";
 import { Z } from "../lib/ui.js";
 import { ftIn } from "../lib/units";
+import { mapZoneTree } from "../lib/mapZones.js";
+import { ROLL_GOODS_UI_ENABLED } from "../lib/canvasConstants.js";
+import { countFootprintDimensions, rectangularCountFootprint } from "../lib/countFootprint.js";
+import { openingDimensions } from "../lib/openings.js";
+import { clampFillOpacity, clampLineWidthPx } from "../lib/conditionAppearance.js";
 
 export const PANEL_MIN_W = 240;
 export const PANEL_MAX_W = 560;
@@ -61,6 +66,18 @@ const tagFamily = (c) => {
   if (typeof c === "object" && c?.family_id) return baseTagOf(t).toUpperCase() || "—";
   return String(t || "").split("-")[0].trim().toUpperCase() || "—";
 };
+const PRODUCT_TYPES = [
+  ["", "Type non défini"],
+  ["brick", "Brique"],
+  ["stone", "Pierre"],
+  ["architectural_block", "Bloc architectural"],
+  ["concrete_block", "Bloc de béton"],
+  ["sill", "Allège"],
+  ["angle_iron", "Fer angle"],
+  ["cladding", "Revêtement"],
+  ["opening", "Ouverture"],
+  ["other", "Autre"],
+];
 // one module-level collator — localeCompare builds a fresh collator per CALL
 // (~56× slower, benchmarked), and natCompare runs n·log n per sorted view
 const coll = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
@@ -103,8 +120,8 @@ function GroutParamInput({ name, value, title, min = 0, max, width = 52, overrid
 }
 
 // Draft-buffered input for a condition's dimension params — wall height
-// (stored `height_ft`) and material thickness (stored `thickness_in`). Both
-// are internal-feet-contract fields, so this component owns the whole display
+// (stored `height_ft`), material thickness (`thickness_in`), and nominal item
+// length (`length_in`). It owns the whole display
 // edge: it SHOWS the value in the active unit system and commits back in the
 // stored one (issue #115 — a metric user typing a 2.4 m wall used to get a
 // 2.4 FOOT wall, silently, beside a readout that said m²).
@@ -132,6 +149,19 @@ function DimParamInput({ name, internal, units, kind, width, onCommit }) {
       onBlur={() => { if (draft != null) commit(draft); setDraft(null); }}
       style={{ width, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
   );
+}
+
+function CountDimensionInput({ name, value, onCommit, allowZero = false }) {
+  const [draft, setDraft] = useState(null);
+  const commit = (raw) => {
+    const n = Number(raw);
+    if (Number.isFinite(n) && (allowZero ? n >= 0 : n > 0)) onCommit(n);
+  };
+  return <input name={name} type="number" min={allowZero ? "0" : "0.01"} max="1200" step="0.125"
+    value={draft ?? String(value)}
+    onChange={(e) => { setDraft(e.target.value); commit(e.target.value); }}
+    onBlur={() => { if (draft != null) commit(draft); setDraft(null); }}
+    style={{ width: 58, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />;
 }
 
 // Draft-buffered input for the Materials tab's name + per + note fields:
@@ -217,7 +247,7 @@ function MaterialsEditor({ materials, onAdd, onUpdate, onRemove, library, libByI
             {twin && (
               <span title={m.inherited
                 ? `Following ${parentTag || "the family"} — edit any field here and this row stops following (the others keep following)`
-                : `This row is this condition's own${m.origin_id ? ` — it no longer follows ${parentTag || "the family"}` : ""}`}
+                : `This row is this takeoff item's own${m.origin_id ? ` — it no longer follows ${parentTag || "the family"}` : ""}`}
                 style={{ fontSize: 10, lineHeight: 1, cursor: "default", padding: "2px 3px",
                   color: m.inherited ? "var(--ink-faint)" : "var(--cobalt)",
                   border: `1px solid ${m.inherited ? "var(--ink-faint)" : "var(--cobalt)"}` }}>{m.inherited ? "↳" : "✎"}</span>
@@ -236,10 +266,10 @@ function MaterialsEditor({ materials, onAdd, onUpdate, onRemove, library, libByI
             <input name="material-per" type="number" min="0" step="any" value={m.per || ""} onChange={(e) => onUpdate(m.id, { per: Math.max(0, parseFloat(e.target.value) || 0) })} placeholder="0" style={{ ...ip, width: 66, ...(ov("per") ? { border: OV } : {}) }} />
             {ov("per") && rv(m, "per")}
             <select name="material-basis" value={m.basis || "area"} onChange={(e) => onUpdate(m.id, { basis: e.target.value })} style={{ ...ip, background: "var(--paper-bright)", ...(ov("basis") ? { border: OV } : {}) }}>
-              <option value="area">floor SF</option>
+              <option value="area">surface SF</option>
               <option value="linear">linear LF</option>
               <option value="count">each</option>
-              <option value="seam_lf" title="Figured seam length from the roll layout — 0 until this condition carries a roll setup">seam LF</option>
+              <option value="seam_lf" title="Figured seam length from the roll layout — 0 until this takeoff item carries a roll setup">seam LF</option>
             </select>
             {ov("basis") && rv(m, "basis")}
             <label style={{ display: "inline-flex", alignItems: "center", gap: 4, color: ov("round") ? "var(--c-warning)" : "var(--ink-muted)" }} title="Round up to whole units (you buy whole buckets/bags)">
@@ -378,15 +408,20 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
       : { padding: "4px 12px 10px", display: "flex", flexDirection: "column", gap: 7, fontSize: 11 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <input name="condition-finish-tag" value={c.finish_tag} onChange={(e) => onUpdateCond({ finish_tag: e.target.value })}
-          title="Rename this condition / finish tag"
-          style={{ width: 88, padding: "3px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontFamily: "var(--f-mono)", fontWeight: 700, fontSize: 12, color: "var(--ink)" }} />
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Multiply this condition by N identical units (measure one, ×N)">
+          title="Renommer ce Produit / tag"
+          style={{ width: isRow ? 240 : 180, maxWidth: "100%", padding: "3px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontFamily: "var(--f-mono)", fontWeight: 700, fontSize: 12, color: "var(--ink)" }} />
+        <select name="condition-product-type" value={c.product_type || ""} onChange={(e) => onUpdateCond({ product_type: e.target.value || undefined })}
+          title="Type de Produit facultatif — il prépare les options métier sans bloquer la création rapide par nom seulement"
+          style={{ maxWidth: 155, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 11.5 }}>
+          {PRODUCT_TYPES.map(([value, label]) => <option key={value || "none"} value={value}>{label}</option>)}
+        </select>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Multiplier ce Produit par N unités identiques (mesurer une fois, ×N)">
           <span style={{ color: "var(--ink-muted)" }}>×</span>
           <input name="condition-multiplier" type="number" min="1" step="1" value={c.multiplier || 1}
             onChange={(e) => onUpdateCond({ multiplier: Math.max(1, parseInt(e.target.value, 10) || 1) })}
             style={{ width: 46, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
         </span>
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Waste % — a flooring allowance added on top of the measured quantity in the Report. You choose it per condition (e.g. ~8% straight-lay LVP, ~15% diagonal, ~20% herringbone).">
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Waste % — an allowance added on top of the measured quantity in the Report. You choose it per takeoff item according to the material and installation method.">
           <span style={{ color: "var(--ink-muted)" }}>Waste</span>
           <input name="condition-waste-pct" type="number" min="0" step="1" value={c.waste_pct ?? 0}
             onChange={(e) => onUpdateCond({ waste_pct: Math.max(0, parseFloat(e.target.value) || 0) })}
@@ -403,6 +438,28 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
         <span style={{ color: "var(--ink-muted)", width: 26 }}>Fill</span>
         <button title="No fill" onClick={() => onUpdateCond({ fill: NO_FILL })} style={{ width: 16, height: 16, borderRadius: 4, background: "var(--paper-bright)", border: c.fill === NO_FILL ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 9, lineHeight: "12px", color: "var(--c-danger)" }}>⦸</button>
         {PALETTE.map((p) => <button key={p} title={p} onClick={() => onUpdateCond({ fill: p })} style={{ width: 16, height: 16, borderRadius: 4, background: p, opacity: 0.55, border: c.fill === p ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />)}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 4 }} title="Visual fill intensity only — does not change any measured quantity">
+          <span style={{ color: "var(--ink-muted)" }}>Fill</span>
+          <input name="condition-fill-opacity" type="range" min="0" max="100" step="5"
+            value={Math.round(clampFillOpacity(c.fill_opacity, c.hatch && c.hatch !== "solid" ? 1 : 0.2) * 100)}
+            onChange={(e) => onUpdateCond({ fill_opacity: Number(e.target.value) / 100 })}
+            style={{ width: 76, accentColor: c.fill && c.fill !== NO_FILL ? c.fill : c.color }} />
+          <input name="condition-fill-opacity-number" type="number" min="0" max="100" step="5"
+            value={Math.round(clampFillOpacity(c.fill_opacity, c.hatch && c.hatch !== "solid" ? 1 : 0.2) * 100)}
+            onChange={(e) => onUpdateCond({ fill_opacity: clampFillOpacity(Number(e.target.value) / 100) })}
+            style={{ width: 48, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontFamily: "var(--f-mono)", fontSize: 12 }} />
+          <span style={{ color: "var(--ink-muted)" }}>%</span>
+        </label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 4 }} title="Screen-space line width. It stays visually constant while zooming and never changes LF.">
+          <span style={{ color: "var(--ink-muted)" }}>Trait</span>
+          <input name="condition-line-width" type="number" min="0.5" max="8" step="0.5"
+            value={clampLineWidthPx(c.line_width_px, 2)}
+            onChange={(e) => onUpdateCond({ line_width_px: clampLineWidthPx(e.target.value, 2) })}
+            style={{ width: 48, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
+          <span style={{ color: "var(--ink-muted)" }}>px</span>
+        </label>
       </div>
       {isRow && rule()}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -438,13 +495,46 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
           <DimParamInput name="condition-thickness-in" internal={c.thickness_in} units={units} kind="thickness" width={50}
             onCommit={(v) => onSetCondParam("thickness_in", v)} />
         </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={`Length (${thickUnit(units)}) — nominal item length, stored in inches. Useful for Count items such as 36-inch anchors or lintels; it is metadata and does not multiply the count.`}>
+          <Icon name="linear" size={13} /><span style={{ color: "var(--ink-muted)" }}>L</span>
+          <DimParamInput name="condition-length-in" internal={c.length_in} units={units} kind="length" width={50}
+            onCommit={(v) => onSetCondParam("length_in", v)} />
+        </span>
       </div>
       {conditionColumns.length > 0 && isRow && rule()}
       {conditionColumns.length > 0 && (
-        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 2 }} title="Classify this condition — the Report can group and export by these (manage columns in the Columns tab)">
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 2 }} title="Classer ce Produit — le rapport peut grouper et exporter selon ces valeurs">
           <ColumnSelects columns={conditionColumns} cond={c} onAssign={onAssignAttr} />
         </div>
       )}
+      {c.count_footprint && (() => {
+        const dims = countFootprintDimensions(c.count_footprint);
+        const setDimensions = (widthIn, heightIn) => onUpdateCond({ count_footprint: rectangularCountFootprint(widthIn, heightIn) });
+        return (
+          <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", paddingTop: 6, marginTop: 1, borderTop: "1px solid var(--ink-faint)" }} title="Reusable Count symbol for this Produit. Dimensions are real inches at the active plan scale; every placement remains exactly 1 EA.">
+            <b style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: ".06em" }}>Count</b>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>X
+              <CountDimensionInput name="count-symbol-width" value={dims.width_in} onCommit={(v) => setDimensions(v, dims.height_in)} /> po
+            </label>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>Y
+              <CountDimensionInput name="count-symbol-height" value={dims.height_in} allowZero onCommit={(v) => setDimensions(dims.width_in, v)} /> po
+            </label>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>Tag
+              <input name="count-visible-tag" value={c.count_tag ?? ""} placeholder={c.finish_tag}
+                onChange={(e) => onUpdateCond({ count_tag: e.target.value })}
+                style={{ width: 94, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
+            </label>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>Nominal
+              <DimParamInput name="count-nominal-length" internal={c.length_in} units={units} kind="length" width={58}
+                onCommit={(v) => onSetCondParam("length_in", v)} /> {thickUnit(units)}
+            </label>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 3 }} title="Joint visuel entre les morceaux créés par Répartition linéaire. Le nombre de morceaux demeure ceil(distance ÷ longueur nominale).">Joint
+              <CountDimensionInput name="count-joint-width" value={c.count_joint_in ?? 0.5} allowZero onCommit={(v) => onUpdateCond({ count_joint_in: Math.max(0, Number(v) || 0) })} /> po
+            </label>
+            <span style={{ color: "var(--ink-muted)", fontSize: 10.5 }}>Sélectionne et remodèle un Count existant pour enregistrer une forme libre.</span>
+          </div>
+        );
+      })()}
       {/* Imported product spec (mfr/style/color/size/description) — editable here,
           read-only columns in the Report. Docked ("stack") layout only: five text
           fields would crowd the wide top-bar band. Shown only when a spec exists
@@ -460,10 +550,10 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
           footage from the condition's floor areas; the readout below comes back
           from the canvas via rollInfo. All lengths stored in feet (the lib/units
           contract); seam/wall allowances are inch-native like the engine. */}
-      {!isRow && !hasRollSetup(c) && (
+      {ROLL_GOODS_UI_ENABLED && !isRow && !hasRollSetup(c) && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, paddingTop: 6, marginTop: 1, borderTop: "1px solid var(--ink-faint)" }}>
           <select name="condition-roll-optin" value=""
-            title="Make this condition a roll-goods material — its floor areas get figured into roll cuts (seams, order footage, a cut diagram)"
+            title="Make this takeoff item a roll-goods material — its floor areas get figured into roll cuts (seams, order footage, a cut diagram)"
             onChange={(e) => { if (e.target.value) onUpdateCond({ roll_setup: mintRollSetup(e.target.value) }); }}
             style={{ padding: "3px 6px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", fontSize: 11.5, cursor: "pointer" }}>
             <option value="">+ roll goods…</option>
@@ -473,7 +563,7 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
           </select>
         </div>
       )}
-      {!isRow && hasRollSetup(c) && (() => {
+      {ROLL_GOODS_UI_ENABLED && !isRow && hasRollSetup(c) && (() => {
         const rs = c.roll_setup;
         const patch = (p) => onUpdateCond({ roll_setup: { ...rs, ...p } });
         const wFt = Math.floor(Number(rs.roll_width_ft) || 0);
@@ -485,7 +575,7 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
           <div style={{ display: "flex", flexDirection: "column", gap: 5, paddingTop: 6, marginTop: 1, borderTop: "1px solid var(--ink-faint)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <span style={{ color: "var(--ink-muted)", fontSize: 10, letterSpacing: 0.4, textTransform: "uppercase" }}
-                title="Roll-goods setup — the engine figures seams, cuts, and order footage from this condition's floor areas">Roll goods</span>
+                title="Roll-goods setup — the engine figures seams, cuts, and order footage from this takeoff item's floor areas">Roll goods</span>
               <select name="condition-roll-material" value={rs.material || "carpet"} onChange={(e) => patch({ material: e.target.value })} style={sel}
                 title="Material class — sets the cut overlay's material-true color">
                 {ROLL_FLOORING_TYPES.map((ft) => <option key={ft} value={ft}>{ft === "carpet" ? "carpet" : ft === "sheet_vinyl" ? "sheet vinyl" : "rubber"}</option>)}
@@ -655,24 +745,25 @@ function TransitionsAction({ cond: c, sources, draft, setDraft, result, setResul
 
 function TakeoffsPanel({
   open, width, overlay = false, multiSheet, units = "imperial",
-  conditions, activeCond, visRowById, projRowById = new Map(), conditionColumns, shapeLabels = [], templates, palette = [], rollByCond = null,
+  conditions, activeCond, visRowById, projRowById = new Map(), conditionColumns, shapeLabels = [], regions = [], templates, openingTemplates = [], selectedShape = null, palette = [], rollByCond = null,
   transitionSources = [],
   matLib, matLibById, linkedCountById,
   panelPrefs, onPanelPrefs, reassigning, epoch, clearSelectionRef,
-  onActivate, onSetActive, onLocate,
+  onActivate, onSetActive, onLocate, onLocateRegion,
   onAddCondition, onDeleteCondition, onUpdateCond, onSetCondParam, onAssignAttr,
   onAddMaterial, onUpdateMaterial, onRemoveMaterial,
   onDuplicateCondition, onSplitCondition, onFollowFamilyRow, onRestoreDroppedRow,
   onDeriveTransitions, onLocateTransition,
   onBulkWaste, onBulkColor, onBulkDelete,
   onSaveTemplate, onApplyTemplate, onRenameTemplate, onDeleteTemplate,
+  onSaveOpening, onArmOpening, onRenameOpening, onDeleteOpening,
   onAttachLibMaterial, onPromoteMaterial, onRevertMatField, matFieldOverridden,
   onUpdateLibMaterial, onPushLibUpdate, onDeleteLibMaterial, onAddLibMaterial,
   onAddColumn, onRenameColumn, onDeleteColumn, onAddColumnValue, onRemoveColumnValue, onRenameColumnValue,
   onAddLabel, onRenameLabel, onRemoveLabel,
   onToggleCollapse, onHoldGesture, onTogglePin,
 }) {
-  const [panelTab, setPanelTab] = useState("takeoffs");       // "takeoffs" | "library" | "materials" | "columns"
+  const [panelTab, setPanelTab] = useState("takeoffs");       // takeoffs | library | openings | materials | columns
   const [condQuery, setCondQuery] = useState("");             // live filter over the condition list (transient, never persisted)
   const [matLibQuery, setMatLibQuery] = useState("");         // Materials tab search (transient; describes the browser-global library, so hydrate/epoch leaves it alone)
   const [closedGroups, setClosedGroups] = useState(() => new Set()); // collapsed tag-family groups in the grouped view
@@ -683,6 +774,7 @@ function TakeoffsPanel({
   const [bulkWaste, setBulkWaste] = useState("");
   const checkAnchorRef = useRef(null);
   const [panelMatOpen, setPanelMatOpen] = useState(false);    // supporting-materials editor expanded inline under the active row
+  const mapZoneRows = useMemo(() => mapZoneTree(regions), [regions]);
   const [twinDraft, setTwinDraft] = useState({ id: "", label: "" });   // inline "duplicate for another area" input (never a prompt)
   // ⟂ Transitions — the two finishes to compare, and the last run's report.
   // Inline for the same reason the twin input is: a window.prompt freezes a
@@ -855,14 +947,14 @@ function TakeoffsPanel({
             onActivate(c.id);
           }}
           onDoubleClick={() => onLocate(c.id)}
-          title={reassigning ? "Reassign selected shape to this condition" : "Make this the active condition (double-click zooms to its takeoffs · ⌘-click / ⇧-click selects for bulk edit · drag to the top-bar palette for one-click access)"}
+          title={reassigning ? "Reassign selected shape to this takeoff item" : "Make this the active takeoff item (double-click zooms to its takeoffs · ⌘-click / ⇧-click selects for bulk edit · drag to the top-bar palette for one-click access)"}
           style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", cursor: "pointer", outline: reassigning ? "1px dashed var(--cobalt)" : "none", outlineOffset: -3, userSelect: "none" }}>
           {hot && <span title={pinned ? `Palette shortcut — press ${hIdx + 1} to activate` : `Press ${hIdx + 1} to activate (pin to lock this number)`} style={{ fontSize: 9, fontFamily: "var(--f-mono,monospace)", color: pinned ? "var(--cobalt)" : "var(--ink-muted)", border: `1px solid ${pinned ? "var(--cobalt)" : "var(--ink-faint)"}`, borderRadius: 3, padding: "0 3px", flexShrink: 0 }}>{hIdx + 1}</span>}
           <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, flexShrink: 0 }}><HatchSwatch type={c.hatch || "solid"} line={c.color} fill={c.fill} /></span>
           <div style={{ minWidth: 0, flex: 1 }}>
             <div style={{ fontWeight: on ? 700 : 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {/* a twin reads as one: whose it is, and how many of its rows have gone their own way */}
-              {c.variant_of ? <span aria-hidden title="A twin — its materials follow another condition" style={{ color: "var(--ink-faint)", fontWeight: 400 }}>↳ </span> : null}
+              {c.variant_of ? <span aria-hidden title="Produit jumeau — ses matériaux suivent un autre Produit" style={{ color: "var(--ink-faint)", fontWeight: 400 }}>↳ </span> : null}
               {c.finish_tag}{mult > 1 ? <span style={{ color: "var(--ink-muted)", fontWeight: 500 }}> ×{mult}</span> : null}
               {c.variant_of && localCount(c) > 0 ? (
                 <span title={`${localCount(c)} material row${localCount(c) === 1 ? "" : "s"} no longer follow${localCount(c) === 1 ? "s" : ""} the family`}
@@ -879,10 +971,10 @@ function TakeoffsPanel({
             </div>
           </div>
           <span style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, color: "var(--ink-muted)", flexShrink: 0 }}>{shapeCount}▦</span>
-          <button onClick={(e) => { e.stopPropagation(); onLocate(c.id); }} title="Zoom the canvas to this condition's takeoffs"
+          <button onClick={(e) => { e.stopPropagation(); onLocate(c.id); }} title="Cadrer les mesures de ce Produit"
             style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12, lineHeight: 1 }}>⌖</button>
           <button onClick={(e) => { e.stopPropagation(); onSetActive(c.id); setPanelMatOpen((v) => (on ? !v : true)); }}
-            title="Supporting Materials — labor, subfloor & materials for this condition"
+            title="Matériaux associés à ce Produit"
             style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: matOn ? "var(--ink)" : "transparent", color: matOn ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 11 }}>
             <Icon name="product" size={11} />{c.materials?.length ? c.materials.length : ""}
           </button>
@@ -891,7 +983,7 @@ function TakeoffsPanel({
             style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", padding: "2px 5px", borderRadius: 0, border: `1px solid ${pinned ? "var(--cobalt)" : "var(--ink-faint)"}`, background: "transparent", color: pinned ? "var(--cobalt)" : (!pinned && palette.length >= 9 ? "var(--ink-faint)" : "var(--ink-muted)"), cursor: "pointer", lineHeight: 0 }}>
             <Icon name="pin" size={12} />
           </button>
-          <button onClick={(e) => { e.stopPropagation(); onDeleteCondition(c.id); }} title="Delete this condition (and its takeoffs)"
+          <button onClick={(e) => { e.stopPropagation(); onDeleteCondition(c.id); }} title="Supprimer ce Produit et ses mesures"
             style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--c-danger)", cursor: "pointer", fontSize: 12 }}>✕</button>
         </div>
         {/* properties for the ACTIVE condition — the appearance editing that
@@ -966,7 +1058,7 @@ function TakeoffsPanel({
               </div>
             ) : (
               <button onClick={() => setTwinDraft({ id: c.id, label: "" })}
-                title="Duplicate this condition — the same finish measured somewhere else, with its own materials. Name the area (e.g. Level 2); no takeoffs come along, you measure into it, and its materials keep following this condition until you change them there."
+                title="Duplicate this takeoff item — the same product measured somewhere else, with its own materials. Name the area (e.g. Level 2); no takeoffs come along, you measure into it, and its materials keep following this item until you change them there."
                 style={{ marginTop: 6, padding: "3px 9px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 11.5 }}>⎘ Duplicate for another area…</button>
             ))}
           </div>
@@ -991,14 +1083,14 @@ function TakeoffsPanel({
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 12px", background: "var(--ink)", color: "var(--paper-cream)", flexShrink: 0 }}>
           <span style={{ display: "inline-flex", gap: 2 }}>
-            {[["takeoffs", `Takeoffs · ${multiSheet ? "these sheets" : "this sheet"}`], ["library", `Library${templates.length ? ` (${templates.length})` : ""}`], ["materials", `Materials${matLib.length ? ` (${matLib.length})` : ""}`], ["columns", `Columns${conditionColumns.length ? ` (${conditionColumns.length})` : ""}`]].map(([id, label]) => (
+            {[["takeoffs", `Produits · ${multiSheet ? "ces feuilles" : "cette feuille"}`], ["library", `Bibliothèque${templates.length ? ` (${templates.length})` : ""}`], ["openings", `Ouvertures${openingTemplates.length ? ` (${openingTemplates.length})` : ""}`], ["materials", `Matériaux${matLib.length ? ` (${matLib.length})` : ""}`], ["columns", `Colonnes${conditionColumns.length ? ` (${conditionColumns.length})` : ""}`]].map(([id, label]) => (
               <button key={id} onClick={() => setPanelTab(id)}
                 style={{ padding: "3px 8px", border: "none", borderBottom: panelTab === id ? "2px solid var(--paper-cream)" : "2px solid transparent", background: "none", color: "var(--paper-cream)", opacity: panelTab === id ? 1 : 0.65, cursor: "pointer", fontWeight: 700, fontSize: 12.5 }}>{label}</button>
             ))}
           </span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
             <button onClick={() => onPanelPrefs((p) => ({ ...p, strip: !p.strip }))}
-              title="Compact strip — also show the conditions as a horizontal strip above the canvas (handy on small projects with the panel collapsed)"
+              title="Compact strip — also show the takeoff items as a horizontal strip above the canvas (handy on small projects with the panel collapsed)"
               style={{ background: panelPrefs.strip ? "var(--paper-cream)" : "none", border: "1px solid var(--paper-cream)", color: panelPrefs.strip ? "var(--ink)" : "var(--paper-cream)", fontSize: 9.5, fontFamily: "var(--f-mono)", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", padding: "2px 6px", lineHeight: 1.4 }}>strip</button>
             <button onClick={onToggleCollapse} title="Collapse the panel (the ☰ button on the canvas edge brings it back)"
               style={{ background: "none", border: "none", color: "var(--paper-cream)", fontSize: 15, cursor: "pointer", lineHeight: 1 }}>»</button>
@@ -1008,7 +1100,7 @@ function TakeoffsPanel({
         {/* view controls — search / natural sort / tag-family grouping.
             All VIEW-ONLY: the array order (hotkeys, payload) never changes. */}
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "1px solid var(--ink-faint)", flexShrink: 0 }}>
-          <input name="condition-filter" value={condQuery} onChange={(e) => setCondQuery(e.target.value)} placeholder="filter conditions…"
+          <input name="condition-filter" value={condQuery} onChange={(e) => setCondQuery(e.target.value)} placeholder="filtrer les Produits…"
             style={{ flex: 1, minWidth: 0, padding: "4px 8px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
           {condQuery && <button onClick={() => setCondQuery("")} title="Clear the filter" style={btnClearX}>×</button>}
           <button onClick={() => onPanelPrefs((p) => ({ ...p, az: !p.az }))}
@@ -1023,24 +1115,24 @@ function TakeoffsPanel({
         {liveChecked.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 10px", borderBottom: "1px solid var(--ink-faint)", background: "var(--tint-select)", flexShrink: 0, flexWrap: "wrap", fontSize: 11 }}>
             <strong style={{ color: "var(--cobalt)" }}>{liveChecked.length} selected</strong>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }} title="Set the waste % on every selected condition">
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }} title="Set the waste % on every selected takeoff item">
               <span style={{ color: "var(--ink-muted)" }}>Waste</span>
               <input name="bulk-waste" type="number" min="0" step="1" value={bulkWaste} onChange={(e) => setBulkWaste(e.target.value)} placeholder="%"
                 onKeyDown={(e) => e.key === "Enter" && applyBulkWaste()}
                 style={{ width: 44, padding: "2px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 11 }} />
               <button onClick={applyBulkWaste} title="Apply waste % to the selection" style={{ padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 11 }}>✓</button>
             </span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }} title="Set the line color on every selected condition">
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }} title="Set the line color on every selected takeoff item">
               {PALETTE.map((p) => <button key={p} title={p} onClick={() => onBulkColor(liveIds(), p)} style={{ width: 13, height: 13, borderRadius: 3, background: p, border: "1px solid var(--ink-faint)", cursor: "pointer", padding: 0 }} />)}
             </span>
-            <button onClick={bulkDelete} title="Delete every selected condition (and their takeoffs)"
+            <button onClick={bulkDelete} title="Delete every selected takeoff item (and their takeoffs)"
               style={{ padding: "2px 7px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--c-danger)", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>Delete</button>
             <button onClick={() => setCheckedConds(new Set())} title="Clear the selection"
               style={{ marginLeft: "auto", padding: "2px 6px", border: "none", background: "none", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12 }}>✕</button>
           </div>
         )}
         <div style={{ flex: 1, overflow: "auto" }}>
-          {conditions.length === 0 && <div style={{ padding: "12px", color: "var(--ink-muted)" }}>No conditions yet — add one and start tracing.</div>}
+          {conditions.length === 0 && <div style={{ padding: "12px", color: "var(--ink-muted)" }}>Aucun Produit — ajoute-en un puis commence à mesurer.</div>}
           {condGroups.map((g) => (
             <React.Fragment key={g.name ?? "_all"}>
               {g.name != null && (
@@ -1057,13 +1149,13 @@ function TakeoffsPanel({
               {groupVisibleItems(g).map(({ c }) => renderCondRow(c))}
             </React.Fragment>
           ))}
-          {searchMiss && <div style={{ padding: "12px", color: "var(--ink-muted)" }}>No conditions match “{condQuery}”.</div>}
+          {searchMiss && <div style={{ padding: "12px", color: "var(--ink-muted)" }}>Aucun Produit ne correspond à « {condQuery} ».</div>}
           <div style={{ padding: "6px 12px", borderTop: "1px solid var(--ink-faint)" }}>
-            <button onClick={onAddCondition} style={{ width: "100%", padding: "6px 10px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 12.5, color: "var(--ink-muted)" }}>+ condition</button>
+            <button onClick={onAddCondition} style={{ width: "100%", padding: "6px 10px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 12.5, color: "var(--ink-muted)" }}>+ Produit</button>
           </div>
           <div style={{ padding: "8px 12px", borderTop: "1px solid var(--ink-faint)", color: "var(--ink-muted)", fontSize: 10.5 }}>
             Select a shape on the plan, then ⧉ Copy / ⎘ Paste (⌘C / ⌘V) — it lands on the sheet under your cursor.
-            <br />⌫ undo point · Esc cancel · scroll = zoom · pan mid-measure: press-and-drag (a click without dragging places the point).
+            <br />⌫ undo point · Esc = previous point / Select when empty · scroll = zoom · pan mid-measure: press-and-drag (a click without dragging places the point).
           </div>
         </div>
         </>}
@@ -1071,16 +1163,16 @@ function TakeoffsPanel({
         {panelTab === "library" && (
           <div style={{ flex: 1, overflow: "auto" }}>
             <div style={{ padding: "8px 12px 4px", color: "var(--ink-muted)", fontSize: 11 }}>
-              Reusable condition templates, shared across every plan in this browser. A fresh workspace seeds from this library (built-in flooring defaults when it's empty).
+              Modèles de Produits réutilisables dans tous les plans de ce navigateur. Ils sont ajoutés uniquement lorsque tu choisis « Appliquer ».
             </div>
             <div style={{ padding: "6px 12px 10px" }}>
               <button onClick={onSaveTemplate} disabled={!aCond}
-                title="Snapshot the active condition (appearance, waste, H/T, materials) into the library"
+                title="Enregistrer le Produit actif (apparence, perte, H/T/L, symbole Count et matériaux) dans la bibliothèque"
                 style={{ width: "100%", padding: "6px 10px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: aCond ? "pointer" : "default", fontSize: 12, color: aCond ? "var(--ink)" : "var(--ink-faint)" }}>
-                + save {aCond?.finish_tag || "the active condition"} to the library
+                + enregistrer {aCond?.finish_tag || "le Produit actif"} dans la bibliothèque
               </button>
             </div>
-            {templates.length === 0 && <div style={{ padding: "2px 12px 12px", color: "var(--ink-muted)" }}>No templates yet — make a condition the way you like it, then save it here.</div>}
+            {templates.length === 0 && <div style={{ padding: "2px 12px 12px", color: "var(--ink-muted)" }}>Aucun modèle — configure un Produit, puis enregistre-le ici.</div>}
             {templates.map((t, idx) => (
               <div key={`${t.finish_tag}-${idx}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderTop: "1px solid var(--ink-faint)" }}>
                 <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, flexShrink: 0 }}><HatchSwatch type={t.hatch || "solid"} line={t.color} fill={t.fill} /></span>
@@ -1090,7 +1182,7 @@ function TakeoffsPanel({
                     {t.waste_pct || 0}% waste{t.height_ft != null ? ` · H ${dimInputStr(t.height_ft, units, "height")}${units === "metric" ? " m" : "′"}` : ""}{t.thickness_in != null ? ` · T ${dimInputStr(t.thickness_in, units, "thickness")}${units === "metric" ? " mm" : "″"}` : ""}{t.materials?.length ? ` · ${t.materials.length} material${t.materials.length === 1 ? "" : "s"}` : ""}
                   </div>
                 </div>
-                <button onClick={() => { onApplyTemplate(t); setPanelTab("takeoffs"); }} title="Add a condition from this template to the takeoff"
+                <button onClick={() => { onApplyTemplate(t); setPanelTab("takeoffs"); }} title="Ajouter un Produit à partir de ce modèle"
                   style={{ flexShrink: 0, padding: "3px 8px", borderRadius: 0, border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>Apply</button>
                 <button onClick={() => onRenameTemplate(idx)} title="Rename this template"
                   style={{ flexShrink: 0, padding: "3px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 11 }}>✎</button>
@@ -1098,6 +1190,42 @@ function TakeoffsPanel({
                   style={{ flexShrink: 0, padding: "3px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--c-danger)", cursor: "pointer", fontSize: 11 }}>✕</button>
               </div>
             ))}
+          </div>
+        )}
+        {/* Project opening library — intentionally opt-in. Ordinary deductions
+            never interrupt the estimator with a save/name prompt. */}
+        {panelTab === "openings" && (
+          <div style={{ flex: 1, overflow: "auto", fontSize: 11.5 }}>
+            <div style={{ padding: "8px 12px 5px", color: "var(--ink-muted)", lineHeight: 1.45 }}>
+              Bibliothèque propre à ce projet. Sélectionne une déduction existante pour l’enregistrer, puis replace une ouverture nommée à l’échelle. Rien n’est proposé automatiquement.
+            </div>
+            <div style={{ padding: "5px 12px 10px" }}>
+              <button type="button" onClick={onSaveOpening} disabled={selectedShape?.measure_role !== "deduct"}
+                title={selectedShape?.measure_role === "deduct" ? "Enregistrer la forme déduite sélectionnée comme ouverture réutilisable" : "Sélectionne d’abord une déduction sur le plan"}
+                style={{ width: "100%", padding: "6px 10px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: selectedShape?.measure_role === "deduct" ? "pointer" : "default", fontSize: 12, color: selectedShape?.measure_role === "deduct" ? "var(--ink)" : "var(--ink-faint)" }}>
+                + Enregistrer la déduction sélectionnée comme ouverture
+              </button>
+            </div>
+            {!openingTemplates.length && <div style={{ padding: "2px 12px 12px", color: "var(--ink-muted)" }}>Aucune ouverture enregistrée dans ce projet.</div>}
+            {openingTemplates.map((opening) => {
+              const dims = openingDimensions(opening);
+              return (
+                <div key={opening.id} style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 12px", borderTop: "1px solid var(--ink-faint)" }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontWeight: 650, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{opening.name}</div>
+                    {dims && <div style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, color: "var(--ink-muted)" }}>
+                      {dimInputStr(dims.width_ft, units, "height")}{units === "metric" ? " m" : "′"} × {dimInputStr(dims.height_ft, units, "height")}{units === "metric" ? " m" : "′"}
+                    </div>}
+                  </div>
+                  <button type="button" onClick={() => onArmOpening(opening)} title="Placer cette ouverture à sa dimension réelle"
+                    style={{ padding: "3px 8px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontSize: 11, fontWeight: 650 }}>Placer</button>
+                  <button type="button" onClick={() => onRenameOpening(opening.id)} title="Renommer"
+                    style={{ padding: "3px 6px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer" }}>✎</button>
+                  <button type="button" onClick={() => onDeleteOpening(opening.id)} title="Retirer de la bibliothèque"
+                    style={{ padding: "3px 6px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--c-danger)", cursor: "pointer" }}>✕</button>
+                </div>
+              );
+            })}
           </div>
         )}
         {/* Materials tab — the material library (#47/#48): canonical
@@ -1132,10 +1260,10 @@ function TakeoffsPanel({
                     <LibDraftInput name="library-material-per" number value={lm.per || ""} placeholder="0" width={62}
                       onCommitText={(t) => onUpdateLibMaterial(lm.id, { per: Math.max(0, parseFloat(t) || 0) })} />
                     <select name="library-material-basis" value={lm.basis || "area"} onChange={(e) => onUpdateLibMaterial(lm.id, { basis: e.target.value })} style={{ ...ip, background: "var(--paper-bright)" }}>
-                      <option value="area">floor SF</option>
+                      <option value="area">surface SF</option>
                       <option value="linear">linear LF</option>
                       <option value="count">each</option>
-                      <option value="seam_lf" title="Figured seam length from the roll layout — 0 until the condition carries a roll setup">seam LF</option>
+                      <option value="seam_lf" title="Figured seam length from the roll layout — 0 until the takeoff item carries a roll setup">seam LF</option>
                     </select>
                     <label style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--ink-muted)" }} title="Round up to whole units">
                       <input name="library-material-round" type="checkbox" checked={lm.round !== false} onChange={(e) => onUpdateLibMaterial(lm.id, { round: e.target.checked })} />round up
@@ -1148,7 +1276,7 @@ function TakeoffsPanel({
                     <span style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, color: "var(--ink-muted)" }}>{n ? `⛓ ${n} linked line${n === 1 ? "" : "s"}` : "not linked yet"}</span>
                     <div style={{ flex: 1 }} />
                     {n > 0 && (
-                      <button onClick={() => onPushLibUpdate(lm.id)} title="Replace the values on every linked condition line with these library values (overrides included)"
+                      <button onClick={() => onPushLibUpdate(lm.id)} title="Replace the values on every linked takeoff-item line with these library values (overrides included)"
                         style={{ padding: "2px 8px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 11 }}>update linked ({n})</button>
                     )}
                     <button onClick={() => onDeleteLibMaterial(lm.id)} title="Remove from the library — linked lines keep their values, only the link is removed"
@@ -1167,6 +1295,30 @@ function TakeoffsPanel({
             properties on the Takeoffs tab */}
         {panelTab === "columns" && (
           <div style={{ flex: 1, overflow: "auto", fontSize: 11.5 }}>
+            <details open style={{ borderBottom: "2px solid var(--ink-faint)" }}>
+              <summary style={{ padding: "8px 12px 4px", cursor: "pointer", fontWeight: 600, fontSize: 11.5 }}>
+                Project Map zones{regions.length ? ` (${regions.length})` : ""}
+              </summary>
+              <div style={{ padding: "0 12px 6px", color: "var(--ink-muted)", fontSize: 11, lineHeight: 1.45 }}>
+                Spatial source of truth for scale and report grouping. Only confirmed semantic zones classify takeoff items.
+              </div>
+              {!mapZoneRows.length && <div style={{ padding: "2px 12px 10px", color: "var(--ink-muted)" }}>No mapped zones yet — create them from Map.</div>}
+              {mapZoneRows.map(({ region, depth }, index) => {
+                const previous = mapZoneRows[index - 1]?.region;
+                const status = region.review?.status || "needs_review";
+                const statusColor = status === "confirmed" ? "var(--c-positive)" : status === "rejected" ? "var(--c-danger)" : "var(--c-warning)";
+                return <React.Fragment key={region.id}>
+                  {(!previous || previous.sheet_id !== region.sheet_id) && <div style={{ padding: "6px 12px 3px", borderTop: index ? "1px solid var(--ink-faint)" : "none", fontFamily: "var(--f-mono)", fontSize: 9.5, color: "var(--ink-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{region.sheet_id}</div>}
+                  <button type="button" onClick={() => onLocateRegion(region)} title="Open this zone in Project Map and locate it on the plan"
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 6, padding: `5px 12px 5px ${12 + depth * 14}px`, border: "none", borderLeft: `3px solid ${statusColor}`, background: "transparent", color: "var(--ink)", cursor: "pointer", textAlign: "left" }}>
+                    <span aria-hidden style={{ color: "var(--ink-muted)" }}>{depth ? "↳" : "◇"}</span>
+                    <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{region.name}</span>
+                    {region.scale_profile?.label && <span style={{ flexShrink: 0, fontFamily: "var(--f-mono)", fontSize: 9, color: "var(--ink-muted)" }}>{region.scale_profile.label}</span>}
+                    <span style={{ width: 6, height: 6, flexShrink: 0, background: statusColor }} title={status.replaceAll("_", " ")} />
+                  </button>
+                </React.Fragment>;
+              })}
+            </details>
             {/* Shape labels (#110) — a flat project-level vocabulary; each shape
                 carries at most one label. Lives here rather than a 5th panel tab:
                 it's the degenerate single-column case. */}
@@ -1191,7 +1343,7 @@ function TakeoffsPanel({
               </div>
             </details>
             <div style={{ padding: "8px 12px 4px", color: "var(--ink-muted)", fontSize: 11 }}>
-              Custom columns (e.g. CSI Division) classify conditions for report grouping and exports. Columns and values apply to the whole project; assign values on a condition in the Takeoffs tab.
+              Custom columns (e.g. CSI Division) classify takeoff items for report grouping and exports. Columns and values apply to the whole project; assign values on an item in the Takeoffs tab.
             </div>
             {conditionColumns.length === 0 && <div style={{ padding: "2px 12px 8px", color: "var(--ink-muted)" }}>Add a column, e.g. CSI Division.</div>}
             {conditionColumns.map((cc) => (
@@ -1206,9 +1358,9 @@ function TakeoffsPanel({
                   {cc.values.map((v) => (
                     <span key={v} style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 3px 2px 8px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", fontSize: 11.5, color: "var(--ink)" }}>
                       {v}
-                      <button onClick={() => onRenameColumnValue(cc.id, v)} title="Rename this value — assigned conditions follow"
+                      <button onClick={() => onRenameColumnValue(cc.id, v)} title="Rename this value — assigned takeoff items follow"
                         style={{ padding: "0 3px", border: "none", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 11 }}>✎</button>
-                      <button onClick={() => onRemoveColumnValue(cc.id, v)} title="Remove from the list — conditions keep the value, shown as (removed)"
+                      <button onClick={() => onRemoveColumnValue(cc.id, v)} title="Remove from the list — takeoff items keep the value, shown as (removed)"
                         style={{ padding: "0 3px", border: "none", background: "transparent", color: "var(--c-danger)", cursor: "pointer", fontSize: 11 }}>✕</button>
                     </span>
                   ))}

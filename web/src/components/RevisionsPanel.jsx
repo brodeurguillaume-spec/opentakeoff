@@ -136,7 +136,7 @@ export default function RevisionsPanel({ current, units = "imperial", onRestore,
           className="field-input" style={{ width: 220, padding: "5px 9px", fontSize: 13 }}
           onKeyDown={(e) => { if (e.key === "Enter") save(saveName); }} name="revision-name" />
         <button className="btn-primary" onClick={() => save(saveName)} disabled={busy}
-          title="Snapshot the current takeoff (conditions, shapes, markups) as a named revision">
+          title="Snapshot the current takeoff (items, shapes, markups) as a named revision">
           <Icon name="revisions" size={13} />Save revision
         </button>
         <button onClick={onClose} title="Back to the canvas"
@@ -161,7 +161,7 @@ export default function RevisionsPanel({ current, units = "imperial", onRestore,
               <thead><tr>
                 <th style={{ ...th, textAlign: "left" }}>Revision</th>
                 <th style={th}>Saved</th>
-                <th style={th}>Conditions</th>
+                <th style={th}>Takeoff items</th>
                 <th style={th}>Shapes</th>
                 <th style={{ ...th, textAlign: "left", paddingLeft: 18 }}>Actions</th>
               </tr></thead>
@@ -257,7 +257,7 @@ export default function RevisionsPanel({ current, units = "imperial", onRestore,
                         </td>
                       </tr>
                     ))}
-                    {!condRows.length && <tr><td colSpan={8} style={{ ...td, textAlign: "center", color: "var(--ink-muted)" }}>Only unchanged conditions — tick “show unchanged” to list them.</td></tr>}
+                    {!condRows.length && <tr><td colSpan={8} style={{ ...td, textAlign: "center", color: "var(--ink-muted)" }}>Only unchanged takeoff items — tick “show unchanged” to list them.</td></tr>}
                   </tbody>
                 </table>
 

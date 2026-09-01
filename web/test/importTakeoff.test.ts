@@ -50,12 +50,13 @@ test("empty project: import replaces wholesale (seeded conditions are not work)"
 test("replace keeps the operator's open view when the export carries none", () => {
   // An MCP export has empty sheet_tabs/groups — adopting them would bounce
   // the operator from their open sheet to the gallery mid-import.
-  const current = { shapes: [], markups: [], conditions: [], sheets: [], sheet_tabs: ["va.pdf"], active_sheet: "va.pdf", sheet_group: ["va.pdf", "va.pdf#2"], last_group: ["va.pdf", "va.pdf#2"] };
+  const current = { shapes: [], markups: [], conditions: [], sheets: [], sheet_tabs: ["va.pdf"], active_sheet: "va.pdf", sheet_group: ["va.pdf", "va.pdf#2"], sheet_group_layout: "column", last_group: ["va.pdf", "va.pdf#2"] };
   const { payload, note } = mergeTakeoffImport(current, doc({ sheet_tabs: [], sheet_group: [], last_group: [] }));
   assert.equal(note.replaced, true);
   assert.deepEqual(payload.sheet_tabs, ["va.pdf"]);
   assert.equal(payload.active_sheet, "va.pdf");
   assert.deepEqual(payload.sheet_group, ["va.pdf", "va.pdf#2"]);
+  assert.equal(payload.sheet_group_layout, "column");
   // …but a NON-empty imported view is real state and wins on replace
   const explicit = mergeTakeoffImport(current, doc({ sheet_tabs: ["va.pdf#3"], active_sheet: "va.pdf#3" }));
   assert.deepEqual(explicit.payload.sheet_tabs, ["va.pdf#3"]);

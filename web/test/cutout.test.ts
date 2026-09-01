@@ -7,7 +7,7 @@
 // independent-shape path rather than guess. No browser, no pdf.js.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { findCutoutParent, subtractCutout, recomposeCutouts } from "../src/lib/cutout.js";
+import { findCutoutParent, subtractCutout, recomposeCutouts, restoreCutoutSnapshot } from "../src/lib/cutout.js";
 import { polyWithHolesMetrics, closedMetrics } from "../src/lib/geometry.js";
 
 const approx = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
@@ -103,4 +103,21 @@ test("recomposeCutouts: rebuilding a parent after one cut in a chain is deleted"
   // back to a plain delete; NEVER restores the pristine base over survivors)
   const bisects = [[-10, 45], [110, 45], [110, 55], [-10, 55]];
   assert.equal(recomposeCutouts(SQUARE, [], [bisects]), null);
+});
+
+test("restoreCutoutSnapshot: a holeless base clears the current linked hole", () => {
+  const current = {
+    id: "parent",
+    verts_norm: SQUARE,
+    verts_norm_holes: [[[10, 10], [20, 10], [20, 20], [10, 20]]],
+    computed: { area_sf: 9900, perimeter_lf: 440 },
+  };
+  const pristine = {
+    verts_norm: SQUARE,
+    computed: { area_sf: 10000, perimeter_lf: 400 },
+  };
+  const restored = restoreCutoutSnapshot(current, pristine);
+  assert.ok(!("verts_norm_holes" in restored), "the old hole must not survive the snapshot restore");
+  assert.deepEqual(restored.computed, pristine.computed);
+  assert.equal(current.verts_norm_holes.length, 1, "the helper is pure");
 });

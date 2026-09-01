@@ -81,7 +81,7 @@ const nowIso = (): string => new Date().toISOString();
 
 export const ANN_SCHEMA = "opentakeoff.takeoff_canvas.v1"; // web/src/lib/store.js
 
-export type MeasureRole = "floor_area" | "deduct" | "linear" | "surface_area" | "count";
+export type MeasureRole = "floor_area" | "deduct" | "linear" | "surface_area" | "count" | "count_run";
 
 /** Supporting-materials row (field-identical to the canvas's addMaterial —
  * web/src/pages/TakeoffCanvas.jsx). Quantity is deterministic: basis ÷ per,
@@ -250,7 +250,10 @@ export interface Shape {
   verts_norm: [number, number][];
   /** count shapes carry {count} alone (canvas commitCount) — recompute skips
    * them, so they never grow area fields; every other role carries both. */
-  computed: { area_sf?: number; perimeter_lf?: number; count?: number };
+  computed: { area_sf?: number; perimeter_lf?: number; count?: number; guide_lf?: number; unit_length_in?: number; joint_in?: number; nominal_total_in?: number; installed_span_in?: number };
+  /** Human-authored linear distribution snapshot. GRUMP can inventory and
+   * render it, but does not author/reconfigure this tool yet. */
+  count_run?: { unit_length_in: number; height_in: number; joint_in: number; tag?: string };
   /** surface_area only: the height this shape was quantified at (canvas
    * commitSurface snapshots the condition's H onto the shape). */
   height_ft?: number;
@@ -1984,7 +1987,7 @@ export class Session {
     this.flushCommits(opts.tool ?? "place_count");
     const c = this.conditions.find((x) => x.finish_tag === opts.condition)!;
     const ea_total = this.shapes
-      .filter((x) => x.condition_id === c.id && x.measure_role === "count")
+      .filter((x) => x.condition_id === c.id && (x.measure_role === "count" || x.measure_role === "count_run"))
       .reduce((n, x) => n + (x.computed.count || 1), 0);
     return { committed: ids.length, shape_ids: ids, condition: c.finish_tag, ea_total };
   }
@@ -2200,7 +2203,7 @@ export class Session {
       this.flushCommits("symbol_sweep");
       const c = this.conditions.find((x) => x.finish_tag === opts.condition)!;
       const ea_total = this.shapes
-        .filter((x) => x.condition_id === c.id && x.measure_role === "count")
+        .filter((x) => x.condition_id === c.id && (x.measure_role === "count" || x.measure_role === "count_run"))
         .reduce((n, x) => n + (x.computed.count || 1), 0);
       committed = { committed: ids.length, shape_ids: ids, condition: c.finish_tag, ea_total };
     }
@@ -2493,7 +2496,7 @@ export class Session {
       this.flushCommits("sweep_schedule_row");
       const c = this.conditions.find((x) => x.finish_tag === t)!;
       const ea_total = this.shapes
-        .filter((x) => x.condition_id === c.id && x.measure_role === "count")
+        .filter((x) => x.condition_id === c.id && (x.measure_role === "count" || x.measure_role === "count_run"))
         .reduce((n, x) => n + (x.computed.count || 1), 0);
       committed = { committed: ids.length, shape_ids: ids, condition: c.finish_tag, ea_total };
     }
@@ -2579,6 +2582,10 @@ export class Session {
         ...(x.computed.area_sf !== undefined ? { area_sf: x.computed.area_sf } : {}),
         ...(x.computed.perimeter_lf !== undefined ? { perimeter_lf: x.computed.perimeter_lf } : {}),
         ...(x.computed.count !== undefined ? { count: x.computed.count } : {}),
+        ...(x.computed.guide_lf !== undefined ? { guide_lf: x.computed.guide_lf } : {}),
+        ...(x.computed.unit_length_in !== undefined ? { unit_length_in: x.computed.unit_length_in } : {}),
+        ...(x.computed.joint_in !== undefined ? { joint_in: x.computed.joint_in } : {}),
+        ...(x.computed.installed_span_in !== undefined ? { installed_span_in: x.computed.installed_span_in } : {}),
         ...(x.height_ft !== undefined ? { height_ft: x.height_ft } : {}),
         ...(x.label ? { label: x.label } : {}),
         nverts: x.verts_norm.length,
@@ -2699,18 +2706,21 @@ export class Session {
     }
     const s = this.sheet(cur.sheet_id);
     const role = patch.role ?? cur.measure_role;
+    if (cur.measure_role === "count_run" && (patch.verts !== undefined || patch.role !== undefined)) {
+      throw new UserError("Répartition linéaire is visible but geometry editing is not ready in GRUMP yet — adjust its two guide points in AI Takeoff, Boss.");
+    }
 
     // Geometry: either the supplied verts or the shape's own, back in image px.
     const vertsPx: Point[] = patch.verts
       ?? cur.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx] as Point);
-    const minPts = role === "count" ? 1 : role === "linear" || role === "surface_area" ? 2 : 3;
+    const minPts = role === "count" ? 1 : role === "linear" || role === "surface_area" || role === "count_run" ? 2 : 3;
     if (vertsPx.length < minPts) {
-      throw new UserError(`A ${role === "count" ? "count marker needs at least 1 point" : role === "linear" || role === "surface_area" ? `${role} shape needs at least 2 points` : "closed shape needs at least 3 vertices"} — got ${vertsPx.length}.`);
+      throw new UserError(`A ${role === "count" ? "count marker needs at least 1 point" : role === "linear" || role === "surface_area" || role === "count_run" ? `${role} shape needs at least 2 points` : "closed shape needs at least 3 vertices"} — got ${vertsPx.length}.`);
     }
     // Count is scale-free (EA). Every dimensional role resolves against the
     // resulting geometry so moving a shape between viewports reprices it and
     // a boundary-crossing edit refuses before mutation.
-    const scale = role === "count" ? null : this.requireScale(
+    const scale = role === "count" || role === "count_run" ? null : this.requireScale(
       s,
       role === "linear" || role === "surface_area" ? "polyline" : "polygon",
       vertsPx,
@@ -2730,6 +2740,7 @@ export class Session {
     };
     const computed =
       role === "count" ? { count: cur.computed.count ?? 1 }
+      : role === "count_run" ? { ...cur.computed }
       : role === "linear" ? { area_sf: 0, perimeter_lf: round2(openLen(vertsPx) * upp) }
       : role === "surface_area" ? (() => {
           const LF = openLen(vertsPx) * upp;

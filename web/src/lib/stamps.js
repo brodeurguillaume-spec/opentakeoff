@@ -41,8 +41,6 @@
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const isPair = (p) => Array.isArray(p) && p.length === 2 && typeof p[0] === "number" && typeof p[1] === "number" && Number.isFinite(p[0]) && Number.isFinite(p[1]);
-const clone = (v) => JSON.parse(JSON.stringify(v));
-
 export function sanitizeStampLibrary(raw) {
   const lib = isPlainObject(raw) ? raw : {};
   const seenStamp = new Set();
@@ -164,11 +162,10 @@ export const DEFAULT_STAMP_SETS = [
   { id: "set-flooring", name: "Flooring shop drawings", stampIds: DEFAULT_STAMPS.map((s) => s.id) },
 ];
 
-// Fresh-library seeding: a library with stamps is left alone; only a truly
-// empty one gets the flooring defaults (the seedConditions precedent). Returns
-// a deep clone so the module constants can never be mutated by a caller edit.
+// Existing user stamps survive through the sanitizer. A truly empty library
+// stays empty: trade-specific defaults are available to import, never injected.
 export function seedStampLibrary(lib) {
   const clean = sanitizeStampLibrary(lib);
   if (clean.stamps.length) return clean;
-  return { stamps: clone(DEFAULT_STAMPS), sets: clone(DEFAULT_STAMP_SETS) };
+  return { stamps: [], sets: [] };
 }

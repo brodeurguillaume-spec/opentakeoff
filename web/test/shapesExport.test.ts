@@ -29,6 +29,19 @@ test("shapesDetail: signs and roles — deduct negative, count carries EA only, 
   assert.equal(l.area_sf, 20);
 });
 
+test("shapesDetail: a linear distribution exports EA plus its fabrication dimensions, never LF", () => {
+  const [run] = shapesDetail(conds, [{
+    id: "run", sheet_id: "sh1", condition_id: "ct", measure_role: "count_run",
+    computed: { count: 4, guide_lf: 10, unit_length_in: 36, joint_in: 0.5, nominal_total_in: 144, installed_span_in: 145.5 },
+  }]);
+  assert.equal(run.ea, 4);
+  assert.equal(run.lf, 0);
+  assert.equal(run.guide_lf, 10);
+  assert.equal(run.unit_length_in, 36);
+  assert.equal(run.joint_in, 0.5);
+  assert.equal(run.installed_span_in, 145.5);
+});
+
 test("shapesDetail: shape rows reconcile with conditionTotals (multiplier 1, no waste)", () => {
   const shapes = [
     floor("a", 120.5, 44),
@@ -90,7 +103,7 @@ test("shapesToCsv: empty project — semantics line + header only", () => {
   const csv = shapesToCsv(shapesDetail(conds, []));
   const lines = csv.split("\n");
   assert.ok(lines[0].startsWith("# Per-shape measured quantities"));
-  assert.equal(lines[1], "Shape,Sheet,Sheet ID,Finish,Role,Area SF,LF,EA,Height ft,Height override,Origin");
+  assert.equal(lines[1], "Shape,Sheet,Sheet ID,Finish,Role,Area SF,LF,EA,Guide LF,Unit length in,Joint in,Nominal total in,Installed span in,Height ft,Height override,Origin");
   assert.equal(lines[2], "");
   assert.equal(lines.length, 3);
 });
@@ -109,13 +122,13 @@ test("shapesToCsv: title, semantics line, exact header, quoting, negative deduct
   ];
   const csv = shapesToCsv(shapesDetail(conds2, shapes), "Job 42");
   const lines = csv.split("\n");
-  assert.equal(lines[0], "# Job 42 — OpenTakeoff shapes");
+  assert.equal(lines[0], "# Job 42 — AnvilTrace shapes");
   assert.equal(lines[1], "# Per-shape measured quantities — no multiplier or waste; deducts negative; LF on floor/deduct/surface rows is trace reference only (incl. openings) — linear rows alone sum to condition LF");
-  assert.equal(lines[2], "Shape,Sheet,Sheet ID,Finish,Role,Area SF,LF,EA,Height ft,Height override,Origin");
+  assert.equal(lines[2], "Shape,Sheet,Sheet ID,Finish,Role,Area SF,LF,EA,Guide LF,Unit length in,Joint in,Nominal total in,Installed span in,Height ft,Height override,Origin");
   assert.ok(lines[3].includes('"CT-1, honed"'));
   // full-line equality: the -12.5 deduct is a NUMBER cell — a type-blind
   // formula guard would emit '-12.5 and includes("-12.5") would still pass
-  assert.equal(lines[4], 'd,sh1,sh1,"CT-1, honed",deduct,-12.5,0,0,0,,untracked');
+  assert.equal(lines[4], 'd,sh1,sh1,"CT-1, honed",deduct,-12.5,0,0,0,0,0,0,0,0,,untracked');
   assert.ok(csv.endsWith("\n"));
 });
 
@@ -138,7 +151,7 @@ test("shapesToJson: schema envelope wraps the rows", () => {
   const j = shapesToJson(rows, "Job 42");
   assert.equal(j.schema, "opentakeoff.shapes.v1");
   assert.equal(j.project_name, "Job 42");
-  assert.equal(j.generated_with, "OpenTakeoff");
+  assert.equal(j.generated_with, "AnvilTrace");
   assert.deepEqual(j.shapes, rows);
   assert.equal(shapesToJson(rows, "").project_name, null);
 });

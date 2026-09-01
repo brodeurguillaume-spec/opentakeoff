@@ -27,8 +27,10 @@ dimension (a dimensioned room, or draw on graph paper exported to PDF).
 - [ ] **Calibration:** calibrate to a known length; a second known length on the same sheet reads back within ~0.5%.
 - [ ] **Area:** trace a room of known SF → matches hand‑calc (e.g. 20'×30' = 600 SF).
 - [ ] **Rectangle:** same room via Rectangle = same SF as Area.
-- [ ] **Deduct:** add a known void → floor SF drops by exactly that void.
+- [ ] **Linked deduct:** select a known Area, press `E`, trace a void fully inside it → parent SF drops by exactly that void; moving a vertex or the whole cut updates both geometries; `Ctrl+D`, Delete, **Undo last shape**, undo and redo keep the relationship coherent.
+- [ ] **Automatic/free deduct:** `D` inside one unambiguous Area creates a linked hole; with no parent it remains an arithmetic-only negative deduct under the active condition.
 - [ ] **Linear:** trace a known run → LF matches; with a thickness set, border SF = LF × T/12.
+- [ ] **Répartition linéaire:** a 10' guide with 36" pieces and 1/2" joints yields 4 EA, 144" nominal and 145.5" installed; moving one endpoint recomputes and recentres the pieces.
 - [ ] **Surface Area:** run × condition height = expected wall SF.
 - [ ] **Count:** N clicks = N EA.
 - [ ] **Multiplier:** ×3 triples SF/LF/EA (and rounds materials off the multiplied basis).
@@ -44,7 +46,7 @@ dimension (a dimensioned room, or draw on graph paper exported to PDF).
 
 ## Phase 2 — Canvas tools & editing UX
 **Goal:** every tool and edit behaves predictably.
-- [ ] Each tool arms by click **and** by shortcut (P/V/A/R/L/S/C/D/⇧D/O/G, 1–9).
+- [ ] Each standard tool arms by click **and** by shortcut (V/A/R/L/Q/S/C/E/⇧E/D/⇧D/O/H/K/G, 1–9); Répartition linéaire arms from its Measure-rail button.
 - [ ] Finish (Enter / double‑click), Esc cancel, Backspace removes last point, ⌘Z undo — all behave per the guide.
 - [ ] Select → move a vertex, insert a midpoint, drag the whole shape, **reassign** to another condition, delete.
 - [ ] Copy / Paste (lands under cursor, correct sheet) / Duplicate.

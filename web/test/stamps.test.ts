@@ -231,19 +231,19 @@ test("sanitizeStampLibrary passes an svg element through unchanged (unknown fiel
 
 // ── seedStampLibrary ─────────────────────────────────────────────────────────
 
-test("seedStampLibrary seeds ONLY a truly empty library", () => {
+test("seedStampLibrary keeps a truly empty library empty", () => {
   const empty = seedStampLibrary({ stamps: [], sets: [] });
-  assert.equal(empty.stamps.length, DEFAULT_STAMPS.length);
-  assert.equal(empty.sets.length, DEFAULT_STAMP_SETS.length);
+  assert.deepEqual(empty, { stamps: [], sets: [] });
   // a non-empty library is returned as-is (sanitized), not replaced
   const mine = { stamps: [{ id: "z", name: "Mine", elements: [] }], sets: [] };
   assert.deepEqual(seedStampLibrary(mine).stamps.map((s: any) => s.id), ["z"]);
 });
 
-test("seedStampLibrary deep-clones the defaults (mutating the result can't corrupt the module constant)", () => {
-  const a = seedStampLibrary(null);
-  a.stamps[0].name = "MUTATED";
-  assert.notEqual(DEFAULT_STAMPS[0].name, "MUTATED");
+test("seedStampLibrary sanitizes and clones a supplied library", () => {
+  const source = { stamps: [{ id: "mine", name: "Mine", elements: [] }], sets: [] };
+  const saved = seedStampLibrary(source);
+  saved.stamps[0].name = "MUTATED";
+  assert.equal(source.stamps[0].name, "Mine");
 });
 
 test("every default stamp instantiates into at least one placeable markup", () => {
