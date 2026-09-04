@@ -7,7 +7,7 @@
 // independent-shape path rather than guess. No browser, no pdf.js.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { findCutoutParent, subtractCutout, recomposeCutouts, restoreCutoutSnapshot } from "../src/lib/cutout.js";
+import { cutoutRebuildUpp, findCutoutParent, subtractCutout, recomposeCutouts, restoreCutoutSnapshot } from "../src/lib/cutout.js";
 import { polyWithHolesMetrics, closedMetrics } from "../src/lib/geometry.js";
 
 const approx = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
@@ -120,4 +120,11 @@ test("restoreCutoutSnapshot: a holeless base clears the current linked hole", ()
   assert.ok(!("verts_norm_holes" in restored), "the old hole must not survive the snapshot restore");
   assert.deepEqual(restored.computed, pristine.computed);
   assert.equal(current.verts_norm_holes.length, 1, "the helper is pure");
+});
+
+test("cutout deletion rebuild uses a resolved Map-zone scale, not only a sheet scale", () => {
+  assert.equal(cutoutRebuildUpp({ status: "resolved", source: "region", effective_upp: 0.0277777778 }), 0.0277777778);
+  assert.equal(cutoutRebuildUpp({ status: "missing" }), 0, "unscaled geometry still reconciles and reprices later");
+  assert.equal(cutoutRebuildUpp({ status: "ambiguous", message: "crosses scale zones" }), null);
+  assert.equal(cutoutRebuildUpp({ status: "resolved", effective_upp: Number.NaN }), null);
 });

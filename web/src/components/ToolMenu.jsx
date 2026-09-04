@@ -11,23 +11,40 @@
 // preview its effect while pointed at (the scale menu's plan-says item shows
 // the calibrated guide bar on the sheet behind the open menu).
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "../brand/icons.jsx";
 
 const MENU_W = 232;
 
 export default function ToolMenu({ face, active = false, accent = "cobalt", title = "", items, onOpenChange, faceStyle, menuStyle, disabled = false, flyout = null, showChevron = true }) {
   const [open, setOpen] = useState(false);
-  const [flip, setFlip] = useState(false);
-  const [flyAt, setFlyAt] = useState(null);   // {left, top} for flyout="right" — fixed, so ancestor overflow can't clip it (the rail)
+  const [menuAt, setMenuAt] = useState(null); // fixed viewport anchor — escapes toolbar/rail overflow clipping
   const rootRef = useRef(null);
+  const menuRef = useRef(null);
 
   useEffect(() => {
     if (!open) return;
-    const onDown = (e) => { if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false); };
+    const onDown = (e) => {
+      if (rootRef.current?.contains(e.target) || menuRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
     const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    const onViewportMove = (event) => {
+      // Scrolling a long Scale/Sheets menu is interaction WITH the portal,
+      // not movement of its anchor. Toolbar/page scrolling still closes it.
+      if (event.type === "scroll" && menuRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
     document.addEventListener("pointerdown", onDown);
     document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("pointerdown", onDown); document.removeEventListener("keydown", onKey); };
+    window.addEventListener("resize", onViewportMove);
+    window.addEventListener("scroll", onViewportMove, true);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", onViewportMove);
+      window.removeEventListener("scroll", onViewportMove, true);
+    };
   }, [open]);
 
   // Notify strictly in open/close PAIRS: fire true only when opening, and repay
@@ -47,17 +64,67 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
     if (disabled) return;
     if (!open && rootRef.current) {
       const r = rootRef.current.getBoundingClientRect();
-      setFlip(r.left + menuW > window.innerWidth - 16);
-      // flyout="right": open beside the trigger (position:fixed escapes the
-      // rail's scroll clipping); clamp the top so a low trigger's menu stays
-      // on-screen — ~44px/row is the honest estimate for these short menus.
+      const estimatedHeight = Math.min(items.length, 8) * 40 + 12;
       if (flyout === "right") {
-        const estH = Math.min(items.length, 8) * 40 + 12;
-        setFlyAt({ left: r.right + 6, top: Math.max(8, Math.min(r.top, window.innerHeight - estH - 8)) });
+        const left = Math.min(r.right + 6, window.innerWidth - menuW - 8);
+        setMenuAt({ left: Math.max(8, left), top: Math.max(8, Math.min(r.top, window.innerHeight - estimatedHeight - 8)) });
+      } else {
+        const left = r.left + menuW > window.innerWidth - 8 ? r.right - menuW : r.left;
+        setMenuAt({ left: Math.max(8, Math.min(left, window.innerWidth - menuW - 8)), top: r.bottom + 4 });
       }
     }
     setOpen((v) => !v);
   };
+
+  const availableHeight = menuAt ? Math.max(120, window.innerHeight - menuAt.top - 8) : 120;
+  const requestedMaxHeight = menuStyle?.maxHeight;
+  const effectiveMaxHeight = requestedMaxHeight
+    ? `min(${requestedMaxHeight}, ${availableHeight}px)`
+    : availableHeight;
+
+  const menu = open && menuAt ? (
+    <div ref={menuRef} style={{
+      position: "fixed", left: menuAt.left, top: menuAt.top,
+      zIndex: 1000,
+      minWidth: MENU_W, background: "var(--paper-bright)", border: "1px solid var(--ink)",
+      boxShadow: "var(--shadow-2)", padding: "4px 0",
+      ...menuStyle,
+      maxHeight: effectiveMaxHeight,
+      overflowY: menuStyle?.overflowY || "auto",
+    }}>
+      {items.map((it, i) => {
+        if (it === "divider") return <div key={i} style={{ height: 1, background: "var(--ink-faint)", margin: "4px 0" }} />;
+        if (it.section) return (
+          <div key={i} style={{ padding: "6px 12px 3px", fontFamily: "var(--f-mono)", fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink-muted)" }}>{it.section}</div>
+        );
+        if (it.note) return (
+          <div key={i} style={{ padding: "6px 12px 8px", fontSize: 11, color: "var(--ink-muted)", lineHeight: 1.4 }}>{it.note}</div>
+        );
+        if (it.custom) return <div key={it.id || i}>{it.custom}</div>;
+        const dis = !!it.disabled;
+        const checkable = "checked" in it;
+        const fg = it.danger ? "var(--c-danger)" : "var(--ink)";
+        return (
+          <button key={it.id || i} type="button" disabled={dis} title={it.title || ""}
+            onClick={() => { if (!dis) { if (!it.stayOpen) setOpen(false); it.onSelect?.(); } }}
+            style={{
+              display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "8px 12px",
+              border: "none", textAlign: "left", cursor: dis ? "default" : "pointer",
+              background: it.active ? "var(--paper-cream)" : "transparent",
+              borderLeft: it.active ? "2px solid var(--cobalt)" : "2px solid transparent",
+              opacity: dis ? 0.38 : 1, color: fg,
+            }}
+            onMouseEnter={(e) => { if (!dis && !it.active) e.currentTarget.style.background = "var(--paper-shadow)"; if (!dis) it.onHover?.(true); }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = it.active ? "var(--paper-cream)" : "transparent"; if (!dis) it.onHover?.(false); }}>
+            {checkable && <span style={{ display: "inline-flex", width: 15, justifyContent: "center", color: "var(--c-positive)", visibility: it.checked ? "visible" : "hidden" }}><Icon name="check" size={14} /></span>}
+            {it.icon && <span style={{ display: "inline-flex", width: 17, justifyContent: "center", color: it.tint || fg }}><Icon name={it.icon} size={16} /></span>}
+            <span style={{ flex: 1, fontFamily: "var(--f-body)", fontSize: 13, fontWeight: it.active ? 600 : 400 }}>{it.label}</span>
+            {it.shortcut && <span style={{ fontFamily: "var(--f-mono)", fontSize: 10, color: "var(--ink-muted)" }}>{it.shortcut}</span>}
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
 
   return (
     <span ref={rootRef} style={{ position: "relative", display: "inline-flex" }}>
@@ -74,49 +141,7 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
         {face}
         {showChevron && <span style={{ display: "inline-flex", opacity: 0.7 }}><Icon name="chevronDown" size={11} /></span>}
       </button>
-      {open && (
-        <div style={{
-          ...(flyout === "right" && flyAt
-            ? { position: "fixed", left: flyAt.left, top: flyAt.top }
-            : { position: "absolute", top: "calc(100% + 4px)", [flip ? "right" : "left"]: 0 }),
-          zIndex: 60,
-          minWidth: MENU_W, background: "var(--paper-bright)", border: "1px solid var(--ink)",
-          boxShadow: "var(--shadow-2)", padding: "4px 0",
-          ...menuStyle,
-        }}>
-          {items.map((it, i) => {
-            if (it === "divider") return <div key={i} style={{ height: 1, background: "var(--ink-faint)", margin: "4px 0" }} />;
-            if (it.section) return (
-              <div key={i} style={{ padding: "6px 12px 3px", fontFamily: "var(--f-mono)", fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink-muted)" }}>{it.section}</div>
-            );
-            if (it.note) return (
-              <div key={i} style={{ padding: "6px 12px 8px", fontSize: 11, color: "var(--ink-muted)", lineHeight: 1.4 }}>{it.note}</div>
-            );
-            if (it.custom) return <div key={it.id || i}>{it.custom}</div>;
-            const dis = !!it.disabled;
-            const checkable = "checked" in it;
-            const fg = it.danger ? "var(--c-danger)" : "var(--ink)";
-            return (
-              <button key={it.id || i} type="button" disabled={dis} title={it.title || ""}
-                onClick={() => { if (!dis) { if (!it.stayOpen) setOpen(false); it.onSelect?.(); } }}
-                style={{
-                  display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "8px 12px",
-                  border: "none", textAlign: "left", cursor: dis ? "default" : "pointer",
-                  background: it.active ? "var(--paper-cream)" : "transparent",
-                  borderLeft: it.active ? "2px solid var(--cobalt)" : "2px solid transparent",
-                  opacity: dis ? 0.38 : 1, color: fg,
-                }}
-                onMouseEnter={(e) => { if (!dis && !it.active) e.currentTarget.style.background = "var(--paper-shadow)"; if (!dis) it.onHover?.(true); }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = it.active ? "var(--paper-cream)" : "transparent"; if (!dis) it.onHover?.(false); }}>
-                {checkable && <span style={{ display: "inline-flex", width: 15, justifyContent: "center", color: "var(--c-positive)", visibility: it.checked ? "visible" : "hidden" }}><Icon name="check" size={14} /></span>}
-                {it.icon && <span style={{ display: "inline-flex", width: 17, justifyContent: "center", color: it.tint || fg }}><Icon name={it.icon} size={16} /></span>}
-                <span style={{ flex: 1, fontFamily: "var(--f-body)", fontSize: 13, fontWeight: it.active ? 600 : 400 }}>{it.label}</span>
-                {it.shortcut && <span style={{ fontFamily: "var(--f-mono)", fontSize: 10, color: "var(--ink-muted)" }}>{it.shortcut}</span>}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {menu && createPortal(menu, document.body)}
     </span>
   );
 }

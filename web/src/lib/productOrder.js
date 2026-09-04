@@ -13,3 +13,18 @@ export function moveProductToPosition(products, id, requestedPosition) {
   next.splice(to, 0, moved);
   return next;
 }
+
+// A one-click Product copy needs a deterministic, immediately editable name.
+// Start with “<name> 1” exactly as the operator expects, then advance only when
+// that name already exists. Comparison follows the rest of the Product UI:
+// whitespace/case differences do not create two visually identical tags.
+export function nextProductCopyName(name, existingNames = []) {
+  const base = String(name || "Produit").trim() || "Produit";
+  const used = new Set((Array.isArray(existingNames) ? existingNames : [])
+    .map((value) => String(value || "").trim().replace(/\s+/g, " ").toLocaleUpperCase()));
+  for (let suffix = 1; suffix < 10000; suffix += 1) {
+    const candidate = `${base} ${suffix}`;
+    if (!used.has(candidate.replace(/\s+/g, " ").toLocaleUpperCase())) return candidate;
+  }
+  return `${base} copie`;
+}

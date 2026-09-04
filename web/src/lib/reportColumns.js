@@ -36,12 +36,11 @@ export const GETTERS = {
 // Table columns: order + header + default visibility. foot(g) fills the tfoot
 // cell from grandTotals(rows); undefined → blank. ref: never in the tfoot.
 export const TABLE_PROFILE = [
-  { key: "finish",        header: "Finish",     defaultVisible: true, locked: true },
+  { key: "finish",        header: "Produit",    defaultVisible: true, locked: true },
   { key: "shapes",        header: "Shapes",     defaultVisible: true },
-  { key: "floor_sf",      header: "Surface SF", defaultVisible: true },
-  { key: "wall_sf",       header: "Wall SF",    defaultVisible: true },
-  { key: "border_sf",     header: "Border SF",  defaultVisible: true },
-  { key: "total_sf",      header: "Total SF",   defaultVisible: false, foot: (g) => g.total_sf },
+  // Method-specific columns are archived in legacyTradeBehavior.js. The
+  // generic surface is already the sum of those buckets, net of deductions.
+  { key: "total_sf",      header: "Surface SF", defaultVisible: true, foot: (g) => g.total_sf },
   { key: "lf",            header: "LF",         defaultVisible: true },
   { key: "ea",            header: "EA",         defaultVisible: true },
   { key: "waste_pct",     header: "Waste",      defaultVisible: true },

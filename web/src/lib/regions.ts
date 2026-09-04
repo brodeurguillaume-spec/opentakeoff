@@ -4,6 +4,8 @@
 // owns confirmed region geometry, while the MCP imports the same sanitizer so
 // both sides persist exactly the same records.
 
+import { workContextError, type RegionWorkContext } from "./regionWorkContext";
+import { guideError } from "./zoneGuides.js";
 export const REGION_PREFIX = "region:";
 export const REGION_PURPOSES = ["semantic", "scale", "analysis"] as const;
 export const REGION_REVIEW_STATUSES = ["proposed", "confirmed", "needs_review", "rejected"] as const;
@@ -87,6 +89,7 @@ export interface PlanRegion {
   assessments?: Record<string, RegionAssessment>;
   review: RegionReview;
   origin?: Record<string, unknown>;
+  work_context?: RegionWorkContext;
   [key: string]: unknown;
 }
 
@@ -342,6 +345,11 @@ export function sanitizeRegions(value: unknown): PlanRegion[] {
     delete next.links;
     delete next.assessments;
     delete next.origin;
+    delete next.guides;
+    if (Array.isArray(raw.guides) && !guideError(raw.guides)) next.guides = raw.guides;
+    if (typeof raw.preparation_ready !== "boolean") delete next.preparation_ready;
+    delete next.work_context;
+    if (raw.work_context && !workContextError(raw.work_context, id)) next.work_context = raw.work_context as RegionWorkContext;
     if (parentId && parentId !== id) next.parent_id = parentId;
     if (scaleProfile) next.scale_profile = scaleProfile;
     if (analysisProfile) next.analysis_profile = analysisProfile;

@@ -1,8 +1,18 @@
 // Durable local-project mirror used only inside the loopback GRUMP shell.
 // IndexedDB stays the fast Canvas cache; the gateway writes the portable copy.
 
+import { sanitizeMaterialLibrary } from "./materials.js";
+import { sanitizeStampLibrary } from "./stamps.js";
+import { sanitizeTemplates } from "./templates.js";
+
 const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
 const TAKEOFF_SCHEMA = "opentakeoff.takeoff_canvas.v1";
+const LIBRARY_SCHEMA = "anviltrace.library.v1";
+const LIBRARIES = {
+  products: { load: "loadTemplates", save: "saveTemplates", sanitize: sanitizeTemplates, empty: () => [] },
+  materials: { load: "loadMaterialLibrary", save: "saveMaterialLibrary", sanitize: sanitizeMaterialLibrary, empty: () => [] },
+  stamps: { load: "loadStampLibrary", save: "saveStampLibrary", sanitize: sanitizeStampLibrary, empty: () => ({ stamps: [], sets: [] }) },
+};
 
 export function grumpProjectIdFromUrl(locationLike = window.location) {
   try {
@@ -51,10 +61,82 @@ export function createGrumpProjectStore(
   let annotationsHydration = null;
   let revisionsHydration = null;
   let annotationsSaveChain = Promise.resolve();
+  const libraryRevisions = new Map();
+  const librarySaveChains = new Map();
 
   const projectUrl = (suffix = "") => `${apiBase}${suffix}`;
   const planUrl = (name) => projectUrl(`/plans/${encodeURIComponent(name)}`);
   const revisionUrl = (id) => projectUrl(`/revisions/${encodeURIComponent(id)}`);
+  const libraryUrl = (kind) => projectUrl(`/libraries/${kind}`);
+
+  async function adoptDiskLibrary(kind, response) {
+    const body = await response.json();
+    const config = LIBRARIES[kind];
+    if (body?.schema !== LIBRARY_SCHEMA || body?.kind !== kind || typeof body?.revision !== "string") {
+      throw new Error(`The gateway returned an invalid ${kind} library.`);
+    }
+    const clean = config.sanitize(body.data);
+    libraryRevisions.set(kind, body.revision);
+    // IndexedDB is a reconstructible accelerator in the local shell. A denied,
+    // corrupt or full browser cache must not turn a successful disk load/write
+    // into an application failure — the next launch can rebuild it again.
+    try { await base[config.save](clean); } catch { /* disk remains authoritative */ }
+    return clean;
+  }
+
+  async function createDiskLibraryFromCache(kind) {
+    const config = LIBRARIES[kind];
+    let cached;
+    try { cached = config.sanitize(await base[config.load]()); }
+    catch { cached = config.empty(); }
+    const created = await fetchLike(libraryUrl(kind), {
+      ...options,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "If-None-Match": "*" },
+      body: JSON.stringify(cached),
+    });
+    // Two project tabs can run the one-time migration together. Only one may
+    // create the file; the loser adopts the winner instead of overwriting it.
+    if (created.status === 409) {
+      const winner = await fetchLike(libraryUrl(kind), options);
+      if (!winner.ok) throw await responseError(winner, `Couldn't load the ${kind} library from disk.`);
+      return adoptDiskLibrary(kind, winner);
+    }
+    if (!created.ok) throw await responseError(created, `Couldn't migrate the ${kind} library to disk.`);
+    return adoptDiskLibrary(kind, created);
+  }
+
+  async function loadDiskLibrary(kind) {
+    const response = await fetchLike(libraryUrl(kind), options);
+    if (response.status === 404) return createDiskLibraryFromCache(kind);
+    if (!response.ok) throw await responseError(response, `Couldn't load the ${kind} library from disk.`);
+    return adoptDiskLibrary(kind, response);
+  }
+
+  function saveDiskLibrary(kind, value) {
+    const config = LIBRARIES[kind];
+    const clean = config.sanitize(value);
+    const previous = librarySaveChains.get(kind) || Promise.resolve();
+    const save = previous.then(async () => {
+      // A direct save before the UI hydrate still needs the current disk
+      // revision. Loading here also performs the one-time IndexedDB migration.
+      if (!libraryRevisions.has(kind)) await loadDiskLibrary(kind);
+      const revision = libraryRevisions.get(kind);
+      const response = await fetchLike(libraryUrl(kind), {
+        ...options,
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(revision ? { "If-Match": revision } : { "If-None-Match": "*" }),
+        },
+        body: JSON.stringify(clean),
+      });
+      if (!response.ok) throw await responseError(response, `Couldn't save the ${kind} library to disk.`);
+      return adoptDiskLibrary(kind, response);
+    });
+    librarySaveChains.set(kind, save.catch(() => {}));
+    return save;
+  }
 
   async function putPlan(name, bytes) {
     const response = await fetchLike(planUrl(name), {
@@ -209,6 +291,7 @@ export function createGrumpProjectStore(
 
   return {
     ...base,
+    planRemovalPolicy: "project-trash",
     async listSheets() {
       await hydratePlans();
       const rows = await base.listSheets();
@@ -240,12 +323,19 @@ export function createGrumpProjectStore(
       return result;
     },
     async removePdf(name) {
-      await base.removePdf(name);
+      // Disk is authoritative: a refused deletion must not evict the open PDF.
       const response = await fetchLike(planUrl(name), { ...options, method: "DELETE" });
       if (!response.ok) throw await responseError(response, `Couldn't remove ${name} from the project folder.`);
+      await base.removePdf(name);
     },
     loadAnnotations,
     saveAnnotations,
+    loadTemplates() { return loadDiskLibrary("products"); },
+    saveTemplates(value) { return saveDiskLibrary("products", value); },
+    loadMaterialLibrary() { return loadDiskLibrary("materials"); },
+    saveMaterialLibrary(value) { return saveDiskLibrary("materials", value); },
+    loadStampLibrary() { return loadDiskLibrary("stamps"); },
+    saveStampLibrary(value) { return saveDiskLibrary("stamps", value); },
     async saveSnapshot(label, payload) {
       const meta = await base.saveSnapshot(label, payload, snapshotScope);
       const record = await base.getSnapshot(meta.id, snapshotScope);

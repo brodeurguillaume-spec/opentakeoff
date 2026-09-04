@@ -41,6 +41,8 @@ import { Z } from "../lib/ui.js";
 import { ftIn } from "../lib/units";
 import { mapZoneTree } from "../lib/mapZones.js";
 import { ROLL_GOODS_UI_ENABLED } from "../lib/canvasConstants.js";
+import { LEGACY_TRADE_FEATURES } from "../lib/legacyTradeBehavior.js";
+import { surfaceQuantity } from "../lib/measurementPresentation.js";
 import { countFootprintDimensions, rectangularCountFootprint } from "../lib/countFootprint.js";
 import { openingDimensions } from "../lib/openings.js";
 import { clampFillOpacity, clampLineWidthPx } from "../lib/conditionAppearance.js";
@@ -208,6 +210,7 @@ function LibDraftInput({ name, value, number, placeholder, width, onCommitText }
 // Materials tab so a library "Adhesive" and an attached line offer the same
 // notch/roller list. Renders nothing when the kind has no preset table.
 function CoveragePresetSelect({ material: m, onPick }) {
+  if (!LEGACY_TRADE_FEATURES.coverageSuggestions) return null;
   const presets = (m.basis || "area") === "area" ? MATERIAL_PRESETS[materialKind(m)] : undefined;
   if (!presets) return null;
   return (
@@ -279,15 +282,15 @@ function MaterialsEditor({ materials, onAdd, onUpdate, onRemove, library, libByI
               <option value="area">surface SF</option>
               <option value="linear">linear LF</option>
               <option value="count">each</option>
-              <option value="seam_lf" title="Figured seam length from the roll layout — 0 until this takeoff item carries a roll setup">seam LF</option>
+              {(LEGACY_TRADE_FEATURES.rollGoodsUi || m.basis === "seam_lf") && <option value="seam_lf" title="Ancien calcul de joints de rouleaux, conservé pour ce matériau">seam LF</option>}
             </select>
             {ov("basis") && rv(m, "basis")}
             <label style={{ display: "inline-flex", alignItems: "center", gap: 4, color: ov("round") ? "var(--c-warning)" : "var(--ink-muted)" }} title="Round up to whole units (you buy whole buckets/bags)">
               <input name="material-round" type="checkbox" checked={m.round !== false} onChange={(e) => onUpdate(m.id, { round: e.target.checked })} />round up
             </label>
             {ov("round") && rv(m, "round")}
-            <CoveragePresetSelect material={m} onPick={(patch) => onUpdate(m.id, patch)} />
-            <input name="material-note" value={m.note || ""} onChange={(e) => onUpdate(m.id, { note: e.target.value })} placeholder="note (coats, trowel…)" style={{ ...ip, width: 150, ...(ov("note") ? { border: OV } : {}) }} />
+            {LEGACY_TRADE_FEATURES.coverageSuggestions && <CoveragePresetSelect material={m} onPick={(patch) => onUpdate(m.id, patch)} />}
+            <input name="material-note" value={m.note || ""} onChange={(e) => onUpdate(m.id, { note: e.target.value })} placeholder="Note facultative" style={{ ...ip, width: 150, ...(ov("note") ? { border: OV } : {}) }} />
             {ov("note") && rv(m, "note")}
             {!lm && onPromote && (
               <button onClick={() => onPromote(m)} title="Save this material to the library (this line becomes linked)"
@@ -314,7 +317,7 @@ function MaterialsEditor({ materials, onAdd, onUpdate, onRemove, library, libByI
                 {ov("grout") && rv(m, "grout")}
               </div>
             )}
-            {showsGroutDeriveAffordance(m) && (
+            {LEGACY_TRADE_FEATURES.coverageSuggestions && showsGroutDeriveAffordance(m) && (
               <div style={{ flexBasis: "100%", display: "flex", alignItems: "center", gap: 6, paddingLeft: 14 }}>
                 <button onClick={() => setGrout({})}
                   title="Start the grout calculator with standard tile geometry (12×24×3/8″ @ 1/8″, 25 lb bag) — REPLACES this line's coverage rate and note with the derived values"
@@ -417,14 +420,20 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
       ? { padding: "6px 2px 2px", display: "flex", flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 10, rowGap: 8, fontSize: 11 }
       : { padding: "4px 12px 10px", display: "flex", flexDirection: "column", gap: 7, fontSize: 11 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <input name="condition-finish-tag" value={c.finish_tag} onChange={(e) => onUpdateCond({ finish_tag: e.target.value })}
-          title="Renommer ce Produit / tag"
-          style={{ width: isRow ? 240 : 180, maxWidth: "100%", padding: "3px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontFamily: "var(--f-mono)", fontWeight: 700, fontSize: 12, color: "var(--ink)" }} />
-        <select name="condition-product-type" value={c.product_type || ""} onChange={(e) => onUpdateCond({ product_type: e.target.value || undefined })}
-          title="Type de Produit facultatif — il prépare les options métier sans bloquer la création rapide par nom seulement"
-          style={{ maxWidth: 155, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 11.5 }}>
-          {PRODUCT_TYPES.map(([value, label]) => <option key={value || "none"} value={value}>{label}</option>)}
-        </select>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+          <span style={{ color: "var(--ink-muted)", fontFamily: "var(--f-mono)", fontSize: 10 }}>TAG</span>
+          <input name="condition-finish-tag" value={c.finish_tag} onChange={(e) => onUpdateCond({ finish_tag: e.target.value })}
+            title="TAG affiché sur le plan"
+            style={{ width: isRow ? 240 : 180, maxWidth: "100%", padding: "3px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontFamily: "var(--f-mono)", fontWeight: 700, fontSize: 12, color: "var(--ink)" }} />
+        </label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+          <span style={{ color: "var(--ink-muted)", fontFamily: "var(--f-mono)", fontSize: 10 }}>CATÉGORIE</span>
+          <select name="condition-product-type" value={c.product_type || ""} onChange={(e) => onUpdateCond({ product_type: e.target.value || undefined })}
+            title="Catégorie facultative du Produit"
+            style={{ maxWidth: 155, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 11.5 }}>
+            {PRODUCT_TYPES.map(([value, label]) => <option key={value || "none"} value={value}>{label}</option>)}
+          </select>
+        </label>
         <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Multiplier ce Produit par N unités identiques (mesurer une fois, ×N)">
           <span style={{ color: "var(--ink-muted)" }}>×</span>
           <input name="condition-multiplier" type="number" min="1" step="1" value={c.multiplier || 1}
@@ -439,6 +448,26 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
           <span style={{ color: "var(--ink-muted)" }}>%</span>
         </span>
       </div>
+      {!isRow && (
+        <>
+        <label style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+          <span style={{ width: 72, flexShrink: 0, color: "var(--ink-muted)", fontFamily: "var(--f-mono)", fontSize: 10 }}>DESCRIPTION</span>
+          <input name="condition-description" value={c.description || ""}
+            onChange={(e) => onUpdateCond({ description: e.target.value })}
+            placeholder="Nom ou description complète du Produit"
+            title="Description complète — le TAG demeure l’étiquette affichée sur le plan"
+            style={{ ...ip, flex: 1, minWidth: 0 }} />
+        </label>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 7, minWidth: 0 }}>
+          <span style={{ width: 72, flexShrink: 0, color: "var(--ink-muted)", fontFamily: "var(--f-mono)", fontSize: 10 }}>NOTES AU RAPPORT</span>
+          <textarea name="condition-report-notes" value={c.report_notes || ""}
+            onChange={(e) => onUpdateCond({ report_notes: e.target.value })}
+            rows={2} placeholder="Notes facultatives à imprimer avec ce Produit"
+            title="Imprimées sous le Produit dans le rapport — Entrée pour une nouvelle ligne. Ces notes ne sont pas affichées sur le plan."
+            style={{ ...ip, flex: 1, minWidth: 0, resize: "vertical", lineHeight: 1.4 }} />
+        </label>
+        </>
+      )}
       {isRow && rule()}
       <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
         <span style={{ color: "var(--ink-muted)", width: 26 }}>Line</span>
@@ -495,7 +524,7 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
             {LINE_STYLE_IDS.map((id) => <option key={id} value={id}>{LINE_STYLES[id].label}</option>)}
           </select>
         </span>
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={`Height (${heightUnit(units)}) — the default for NEW wall traces (SF = LF × H) and the vertical-SF display on floor areas. Walls keep the height they were drawn at — select a wall to change just that one.`}>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={`Hauteur (${heightUnit(units)}) pour les nouveaux tracés Surface Area : longueur × hauteur. Une Area/Rectangle reste une surface et n’utilise pas cette hauteur. Chaque tracé existant conserve sa propre hauteur.`}>
           <Icon name="height" size={13} /><span style={{ color: "var(--ink-muted)" }}>H</span>
           <DimParamInput name="condition-height-ft" internal={c.height_ft} units={units} kind="height" width={54}
             onCommit={(v) => onSetCondParam("height_ft", v)} />
@@ -762,7 +791,7 @@ function TakeoffsPanel({
   onActivate, onSetActive, onLocate, onLocateRegion,
   onAddCondition, onDeleteCondition, onUpdateCond, onSetCondParam, onAssignAttr,
   onAddMaterial, onUpdateMaterial, onRemoveMaterial,
-  onDuplicateCondition, onSplitCondition, onFollowFamilyRow, onRestoreDroppedRow,
+  onCloneCondition, onDuplicateCondition, onSplitCondition, onFollowFamilyRow, onRestoreDroppedRow,
   onDeriveTransitions, onLocateTransition,
   onBulkWaste, onBulkColor, onBulkDelete,
   onSaveTemplate, onApplyTemplate, onRenameTemplate, onDeleteTemplate,
@@ -921,16 +950,16 @@ function TakeoffsPanel({
   const renderCondRow = (c) => {
     const row = visRowById.get(c.id);
     const mult = c.multiplier || 1;
-    const sf = row?.floor_sf || 0, lf = row?.lf || 0, ea = row?.ea || 0, wsf = row?.wall_sf || 0;
+    const sf = surfaceQuantity(row), lf = row?.lf || 0, ea = row?.ea || 0;
     const shapeCount = row?.shape_count || 0;
     // whole-project Σ suffix (#137): shown ONLY when the project holds more
     // than the open sheets, so the common everything-on-this-sheet case stays
     // one number. A condition entirely on closed sheets reads "Σ 412 SF"
     // instead of a dead "—".
-    const qtys = (o) => [o.sf ? fa(o.sf) : "", o.wsf ? `${fa(o.wsf)} wall` : "", o.lf ? fl(o.lf) : "", o.ea ? `${num(o.ea, 0)} EA` : ""].filter(Boolean).join(" · ");
+    const qtys = (o) => [o.sf ? fa(o.sf) : "", o.lf ? fl(o.lf) : "", o.ea ? `${num(o.ea, 0)} EA` : ""].filter(Boolean).join(" · ");
     const pr = projRowById.get(c.id);
-    const prQ = pr ? { sf: pr.floor_sf || 0, wsf: pr.wall_sf || 0, lf: pr.lf || 0, ea: pr.ea || 0 } : null;
-    const projDiff = prQ && (Math.abs(prQ.sf - sf) > 0.005 || Math.abs(prQ.wsf - wsf) > 0.005 || Math.abs(prQ.lf - lf) > 0.005 || Math.abs(prQ.ea - ea) > 0.005);
+    const prQ = pr ? { sf: surfaceQuantity(pr), lf: pr.lf || 0, ea: pr.ea || 0 } : null;
+    const projDiff = prQ && (Math.abs(prQ.sf - sf) > 0.005 || Math.abs(prQ.lf - lf) > 0.005 || Math.abs(prQ.ea - ea) > 0.005);
     const on = c.id === activeCond;
     const matOn = on && panelMatOpen;
     const checked = checkedConds.has(c.id);
@@ -973,11 +1002,16 @@ function TakeoffsPanel({
                   style={{ marginLeft: 5, fontFamily: "var(--f-mono,monospace)", fontSize: 9, fontWeight: 500, color: "var(--cobalt)", border: "1px solid var(--cobalt)", borderRadius: 3, padding: "0 3px" }}>{localCount(c)}</span>
               ) : null}
             </div>
+            {c.description ? (
+              <div title={c.description} style={{ marginTop: 1, fontSize: 10.5, color: "var(--ink-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {c.description}
+              </div>
+            ) : null}
             <div style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 11, color: "var(--ink-muted)" }}>
-              {qtys({ sf, wsf, lf, ea })}{!sf && !wsf && !lf && !ea && !projDiff ? "—" : ""}
+              {qtys({ sf, lf, ea })}{!sf && !lf && !ea && !projDiff ? "—" : ""}
               {projDiff ? (
                 <span title="Σ = whole project, every sheet. The leading numbers count the open sheets only." style={{ color: "var(--ink-faint)" }}>
-                  {(sf || wsf || lf || ea) ? " · " : ""}Σ {qtys(prQ) || "0"}
+                  {(sf || lf || ea) ? " · " : ""}Σ {qtys(prQ) || "0"}
                 </span>
               ) : null}
             </div>
@@ -985,13 +1019,11 @@ function TakeoffsPanel({
           <span style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, color: "var(--ink-muted)", flexShrink: 0 }}>{shapeCount}▦</span>
           <button onClick={(e) => { e.stopPropagation(); onLocate(c.id); }} title="Cadrer les mesures de ce Produit"
             style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12, lineHeight: 1 }}>⌖</button>
-          <button onClick={(e) => {
-            e.stopPropagation();
-            onSetActive(c.id);
-            setPanelMatOpen(true);
-            setTwinDraft({ id: c.id, label: "" });
-          }} title="Dupliquer ce Produit pour une autre zone — le champ de nom s’ouvre sous sa fiche"
-            style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: twinDraft.id === c.id ? "var(--ink)" : "transparent", color: twinDraft.id === c.id ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 12, lineHeight: 1 }}>⎘</button>
+          <button onClick={(e) => { e.stopPropagation(); onCloneCondition(c.id); }}
+            title="Dupliquer immédiatement ce Produit — copie indépendante, nouveau nom, couleur et motif distincts"
+            style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 7px", borderRadius: 0, border: "1px solid var(--cobalt)", background: "var(--paper-shadow)", color: "var(--cobalt)", cursor: "pointer", fontSize: 10.5, fontWeight: 700, lineHeight: 1 }}>
+            <Icon name="duplicate" size={15} /><span>Copier</span>
+          </button>
           <button onClick={(e) => { e.stopPropagation(); onSetActive(c.id); setPanelMatOpen((v) => (on ? !v : true)); }}
             title="Matériaux associés à ce Produit"
             style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: matOn ? "var(--ink)" : "transparent", color: matOn ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 11 }}>
@@ -1023,7 +1055,7 @@ function TakeoffsPanel({
                   style={{ ...ip, flex: 1, minWidth: 0 }} />
               </label>
               <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ color: "var(--ink-muted)", width: 56, flexShrink: 0 }}>Subfloor</span>
+                <span style={{ color: "var(--ink-muted)", width: 56, flexShrink: 0 }}>Support</span>
                 <input name="condition-subfloor-type" value={c.subfloorType || ""} placeholder="e.g. Ply, Concrete slab, OSB"
                   onChange={(e) => onUpdateCond({ subfloorType: e.target.value })}
                   style={{ ...ip, flex: 1, minWidth: 0 }} />
@@ -1078,7 +1110,7 @@ function TakeoffsPanel({
             ) : (
               <button onClick={() => setTwinDraft({ id: c.id, label: "" })}
                 title="Duplicate this takeoff item — the same product measured somewhere else, with its own materials. Name the area (e.g. Level 2); no takeoffs come along, you measure into it, and its materials keep following this item until you change them there."
-                style={{ marginTop: 6, padding: "3px 9px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 11.5 }}>⎘ Duplicate for another area…</button>
+                style={{ marginTop: 6, padding: "3px 9px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 11.5 }}>↳ Variante liée pour une autre zone…</button>
             ))}
           </div>
         )}
@@ -1093,21 +1125,30 @@ function TakeoffsPanel({
     // phone (the panel was covering the whole screen). Desktop docked layout
     // is unchanged. The header's » collapse button is the close affordance.
     <div ref={rootRef} style={overlay
-      ? { position: "absolute", top: 0, right: 0, bottom: 0, width: "min(100%, 420px)", zIndex: Z.drawer, boxShadow: "var(--shadow-pop)", display: "flex", background: "var(--paper-bright)", borderLeft: "1px solid var(--ink-faint)", fontSize: 12.5 }
+      ? { position: "absolute", top: 0, right: 0, bottom: 0, width: `min(100%, ${Math.min(width, 420)}px)`, zIndex: Z.drawer, boxShadow: "var(--shadow-pop)", display: "flex", background: "var(--paper-bright)", borderLeft: "1px solid var(--ink-faint)", fontSize: 12.5 }
       : { width, flexShrink: 0, display: "flex", background: "var(--paper-bright)", borderLeft: "1px solid var(--ink-faint)", fontSize: 12.5 }}>
       {!overlay && <div onPointerDown={onResizeDown} onPointerMove={onResizeMove} onPointerUp={onResizeEnd}
         onPointerCancel={onResizeEnd} onLostPointerCapture={onResizeEnd}
         title="Drag to resize"
         style={{ width: 5, flexShrink: 0, cursor: "col-resize", touchAction: "none", background: "transparent", borderRight: "1px solid var(--ink-faint)" }} />}
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 12px", background: "var(--ink)", color: "var(--paper-cream)", flexShrink: 0 }}>
-          <span style={{ display: "inline-flex", gap: 2 }}>
-            {[["takeoffs", `Produits · ${multiSheet ? "ces feuilles" : "cette feuille"}`], ["library", `Bibliothèque${templates.length ? ` (${templates.length})` : ""}`], ["openings", `Ouvertures${openingTemplates.length ? ` (${openingTemplates.length})` : ""}`], ["materials", `Matériaux${matLib.length ? ` (${matLib.length})` : ""}`], ["columns", `Colonnes${conditionColumns.length ? ` (${conditionColumns.length})` : ""}`]].map(([id, label]) => (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 5, padding: "7px 12px", background: "var(--ink)", color: "var(--paper-cream)", flexShrink: 0 }}>
+          <span style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 2, minWidth: 0 }}>
+            {panelPrefs.productsOnly ? (
+              <strong style={{ padding: "3px 2px", fontSize: 12.5, whiteSpace: "nowrap" }}>Produits · {multiSheet ? "ces feuilles" : "cette feuille"}</strong>
+            ) : [["takeoffs", `Produits · ${multiSheet ? "ces feuilles" : "cette feuille"}`], ["library", `Bibliothèque${templates.length ? ` (${templates.length})` : ""}`], ["openings", `Ouvertures${openingTemplates.length ? ` (${openingTemplates.length})` : ""}`], ["materials", `Matériaux${matLib.length ? ` (${matLib.length})` : ""}`], ["columns", `Colonnes${conditionColumns.length ? ` (${conditionColumns.length})` : ""}`]].map(([id, label]) => (
               <button key={id} onClick={() => setPanelTab(id)}
-                style={{ padding: "3px 8px", border: "none", borderBottom: panelTab === id ? "2px solid var(--paper-cream)" : "2px solid transparent", background: "none", color: "var(--paper-cream)", opacity: panelTab === id ? 1 : 0.65, cursor: "pointer", fontWeight: 700, fontSize: 12.5 }}>{label}</button>
+                style={{ flex: "0 0 auto", whiteSpace: "nowrap", padding: "3px 5px", border: "none", borderBottom: panelTab === id ? "2px solid var(--paper-cream)" : "2px solid transparent", background: "none", color: "var(--paper-cream)", opacity: panelTab === id ? 1 : 0.65, cursor: "pointer", fontWeight: 700, fontSize: 12 }}>{label}</button>
             ))}
           </span>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end", alignSelf: "flex-end", gap: 5 }}>
+            <button onClick={() => {
+              const next = !panelPrefs.productsOnly;
+              if (next) setPanelTab("takeoffs");
+              onPanelPrefs((prefs) => ({ ...prefs, productsOnly: next }));
+            }}
+              title={panelPrefs.productsOnly ? "Réafficher Bibliothèque, Ouvertures, Matériaux et Colonnes" : "Mode Produits seulement — cacher les autres onglets pendant le mesurage"}
+              style={{ background: panelPrefs.productsOnly ? "var(--paper-cream)" : "none", border: "1px solid var(--paper-cream)", color: panelPrefs.productsOnly ? "var(--ink)" : "var(--paper-cream)", fontSize: 9.5, fontFamily: "var(--f-mono)", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", padding: "2px 6px", lineHeight: 1.4 }}>{panelPrefs.productsOnly ? "onglets" : "solo"}</button>
             <button onClick={() => onPanelPrefs((p) => ({ ...p, strip: !p.strip }))}
               title="Compact strip — also show the takeoff items as a horizontal strip above the canvas (handy on small projects with the panel collapsed)"
               style={{ background: panelPrefs.strip ? "var(--paper-cream)" : "none", border: "1px solid var(--paper-cream)", color: panelPrefs.strip ? "var(--ink)" : "var(--paper-cream)", fontSize: 9.5, fontFamily: "var(--f-mono)", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", padding: "2px 6px", lineHeight: 1.4 }}>strip</button>
@@ -1156,11 +1197,12 @@ function TakeoffsPanel({
             <React.Fragment key={g.name ?? "_all"}>
               {g.name != null && (
                 <div onClick={() => setClosedGroups((s) => { const n = new Set(s); if (n.has(g.name)) n.delete(g.name); else n.add(g.name); return n; })}
-                  title="Collapse / expand this tag family"
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderTop: "1px solid var(--ink-faint)", background: "var(--paper-cream)", cursor: "pointer", fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--ink-muted)", userSelect: "none" }}>
-                  <span style={{ width: 10 }}>{closedGroups.has(g.name) ? "▸" : "▾"}</span>
-                  <span style={{ fontWeight: 700, color: "var(--ink)" }}>{g.name}</span>
-                  <span>· {g.items.length}</span>
+                  title="Réduire / développer cette catégorie"
+                  style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 12px 3px", cursor: "pointer", fontFamily: "var(--f-mono,monospace)", fontSize: 9.5, letterSpacing: "0.07em", textTransform: "uppercase", color: "var(--ink-muted)", userSelect: "none" }}>
+                  <span aria-hidden style={{ height: 1, flex: 1, background: "var(--ink-faint)" }} />
+                  <span style={{ fontWeight: 700, color: "var(--ink-muted)" }}>{g.name}</span>
+                  <span>{g.items.length}</span>
+                  <span style={{ width: 9 }}>{closedGroups.has(g.name) ? "▸" : "▾"}</span>
                 </div>
               )}
               {/* groupVisibleItems: a collapsed group still renders its
@@ -1182,7 +1224,7 @@ function TakeoffsPanel({
         {panelTab === "library" && (
           <div style={{ flex: 1, overflow: "auto" }}>
             <div style={{ padding: "8px 12px 4px", color: "var(--ink-muted)", fontSize: 11 }}>
-              Modèles de Produits réutilisables dans tous les plans de ce navigateur. Ils sont ajoutés uniquement lorsque tu choisis « Appliquer ».
+              Modèles de Produits partagés entre tes projets. Ils sont ajoutés uniquement lorsque tu choisis « Appliquer »; avec GRUMP connecté, le disque est la source officielle.
             </div>
             <div style={{ padding: "6px 12px 10px" }}>
               <button onClick={onSaveTemplate} disabled={!aCond}
@@ -1282,7 +1324,7 @@ function TakeoffsPanel({
                       <option value="area">surface SF</option>
                       <option value="linear">linear LF</option>
                       <option value="count">each</option>
-                      <option value="seam_lf" title="Figured seam length from the roll layout — 0 until the takeoff item carries a roll setup">seam LF</option>
+                      {(LEGACY_TRADE_FEATURES.rollGoodsUi || lm.basis === "seam_lf") && <option value="seam_lf" title="Ancien calcul de joints de rouleaux, conservé pour ce matériau">seam LF</option>}
                     </select>
                     <label style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--ink-muted)" }} title="Round up to whole units">
                       <input name="library-material-round" type="checkbox" checked={lm.round !== false} onChange={(e) => onUpdateLibMaterial(lm.id, { round: e.target.checked })} />round up

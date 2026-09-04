@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Z } from "../lib/ui.js";
+import RegionWorkCard from "./RegionWorkCard.jsx";
 
 const STATUS = {
   proposed: { label: "Proposed", color: "var(--cobalt)" },
@@ -15,6 +16,9 @@ const button = (color = "var(--ink-faint)", fill = "transparent") => ({
 });
 const label = { display: "block", marginTop: 9, fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: 0.4 };
 const input = { width: "100%", boxSizing: "border-box", marginTop: 4, padding: "7px 8px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 12 };
+// Review workspace sizes, bounded by the canvas rather than the physical screen.
+const PANEL_SIZE = { normal: { width: 440, height: 760 }, large: { width: 760, height: 920 } };
+const scrollSection = { minHeight: 0, overflowY: "auto", overflowX: "hidden", overflowWrap: "anywhere" };
 
 function percent(value) {
   return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "—";
@@ -80,16 +84,22 @@ function RegionEditor({ editor, scales, detectedScales, standardScales, sheetLab
 export default function ProjectMapPanel({
   regions, visibleSheetIds, selectedRegionId, editor, redrawId, scales, detectedScales,
   standardScales, sheetLabel, onClose, onSelect, onStartNew, onEditorChange, onSave,
-  onEdit, onRedraw, onDelete, onCancelEdit, onCancelRedraw, onReview,
+  onEdit, onRedraw, onDelete, onCancelEdit, onCancelRedraw, onReview, products = [], onSaveWorkContext, onStartGuides, onStartPoi, onPreparationReady,
 }) {
   const [scope, setScope] = useState("visible");
   const [collapsed, setCollapsed] = useState(false);
+  const [large, setLarge] = useState(false);
+  const [workDirty, setWorkDirty] = useState(false);
+  const leaveWorkCard = (action) => {
+    if (workDirty && !window.confirm("La fiche contient des modifications non enregistrées. Les abandonner ?")) return;
+    action();
+  };
   const selected = regions.find((region) => region.id === selectedRegionId) || null;
   const [note, setNote] = useState("");
   useEffect(() => setNote(selected?.review?.note || ""), [selected?.id, selected?.review?.note]);
   const shown = useMemo(() => {
     const visible = new Set(visibleSheetIds);
-    return regions.filter((region) => scope === "all" || visible.has(region.sheet_id)).sort((a, b) =>
+    return regions.filter((region) => scope === "all" || (scope === "confirmed" ? region.review?.status === "confirmed" : visible.has(region.sheet_id))).sort((a, b) =>
       a.sheet_id.localeCompare(b.sheet_id) || a.name.localeCompare(b.name));
   }, [regions, scope, visibleSheetIds]);
   const pending = regions.filter((region) => ["proposed", "needs_review"].includes(region.review?.status)).length;
@@ -120,35 +130,46 @@ export default function ProjectMapPanel({
     </button>;
   }
 
-  return <aside data-testid="project-map-panel" onPointerDown={(event) => event.stopPropagation()} style={{ position: "absolute", left: 14, top: 14, width: 374, maxWidth: "calc(100% - 28px)", maxHeight: "calc(100% - 28px)", overflowY: "auto", boxSizing: "border-box", padding: 14, background: "var(--paper-bright)", border: "1px solid var(--c-positive)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi + 2, color: "var(--ink)" }}>
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+  return <aside data-testid="project-map-panel" data-canvas-shortcuts="off" tabIndex={-1} onKeyDown={(event) => event.stopPropagation()} onPointerDown={(event) => {
+    event.stopPropagation();
+    // Labels/legends are not editable: focus the panel, not the plan underneath.
+    if (!event.target.closest('input, textarea, select, button, summary, a, [contenteditable]')) event.currentTarget.focus({ preventScroll: true });
+  }} style={{ position: "absolute", left: 14, top: 14, ...PANEL_SIZE[large ? "large" : "normal"], minWidth: "min(320px, calc(100% - 28px))", minHeight: "min(320px, calc(100% - 28px))", maxWidth: "calc(100% - 28px)", maxHeight: "calc(100% - 28px)", resize: "both", display: "flex", flexDirection: "column", overflow: "hidden", boxSizing: "border-box", padding: 14, background: "var(--paper-bright)", border: "1px solid var(--c-positive)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi + 2, color: "var(--ink)" }}>
+    <div style={{ display: "flex", flexShrink: 0, alignItems: "center", gap: 8 }}>
       <div><b style={{ fontSize: 13.5 }}>Project Map</b><div style={{ fontSize: 10, color: "var(--ink-muted)", marginTop: 2 }}>{regions.length} zones · {pending} awaiting review</div></div>
-      <button type="button" data-testid="project-map-collapse" title="Réduire Project Map sur le côté" aria-label="Réduire Project Map sur le côté" onClick={() => setCollapsed(true)} style={{ marginLeft: "auto", ...button("var(--c-positive)"), padding: "3px 7px" }}>‹</button>
-      <button type="button" title="Close Project Map" onClick={onClose} style={{ ...button("var(--ink-muted)"), padding: "3px 7px" }}>×</button>
+      <button type="button" data-testid="project-map-size" aria-pressed={large} title={large ? "Taille standard" : "Agrandir Project Map"} aria-label={large ? "Taille standard" : "Agrandir Project Map"} onClick={() => setLarge((value) => !value)} style={{ marginLeft: "auto", ...button("var(--c-positive)"), padding: "3px 7px" }}>{large ? "↙" : "⤢"}</button>
+      <button type="button" data-testid="project-map-collapse" title="Réduire Project Map sur le côté" aria-label="Réduire Project Map sur le côté" onClick={() => leaveWorkCard(() => setCollapsed(true))} style={{ ...button("var(--c-positive)"), padding: "3px 7px" }}>‹</button>
+      <button type="button" title="Close Project Map" onClick={() => leaveWorkCard(onClose)} style={{ ...button("var(--ink-muted)"), padding: "3px 7px" }}>×</button>
     </div>
 
-    {redrawId && !editor ? <div data-testid="map-region-editor">
+    <div style={{ flexShrink: 0, marginTop: "var(--sp-2)", color: "var(--ink-muted)", fontSize: "var(--fs-xs)" }}>Tirez le coin inférieur droit pour redimensionner.</div>
+    {selected && !editor && !redrawId && onStartGuides && <div style={{ flexShrink: 0, marginTop: "var(--sp-2)" }}>
+      <button data-testid="map-start-guides" type="button" style={{ ...button("var(--c-positive)"), width: "100%" }} onClick={() => leaveWorkCard(() => onStartGuides(selected))}>Mark-ups / Repères GRUMP · {selected.guides?.length || 0}</button>
+      <div style={{ fontSize: "var(--fs-xs)", color: "var(--ink-muted)", marginTop: "var(--sp-1)" }}>Notes, flèches, mesures K… liés à cette zone, hors take-off.</div>
+    </div>}
+    {redrawId && !editor ? <div data-testid="map-region-editor" style={{ ...scrollSection, flex: 1 }}>
       <div style={{ marginTop: 12, fontWeight: 700, fontSize: 13 }}>Manually redrawing map zone</div>
       <div style={{ marginTop: 6, color: "var(--ink-muted)", fontSize: 11.5 }}>This is a human Project Map trace, not a GRUMP retry. Trace at least three points, then Finish. The saved contour stays intact until you confirm the replacement.</div>
       <button type="button" onClick={onCancelRedraw} style={{ marginTop: 10, ...button("var(--ink-secondary)") }}>Cancel redraw</button>
-    </div> : editor ? <div data-testid="map-region-editor" style={{ marginTop: 12 }}><RegionEditor editor={editor} scales={scales} detectedScales={detectedScales} standardScales={standardScales} sheetLabel={sheetLabel} onChange={onEditorChange} onSave={onSave} onRedraw={onRedraw} onDelete={onDelete} onCancel={onCancelEdit} /></div> : <>
-      <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+    </div> : editor ? <div data-testid="map-region-editor" style={{ ...scrollSection, flex: 1, marginTop: 12 }}><RegionEditor editor={editor} scales={scales} detectedScales={detectedScales} standardScales={standardScales} sheetLabel={sheetLabel} onChange={onEditorChange} onSave={onSave} onRedraw={onRedraw} onDelete={onDelete} onCancel={onCancelEdit} /></div> : <>
+      <div style={{ display: "flex", flexShrink: 0, gap: 6, marginTop: 12 }}>
         <button type="button" onClick={() => setScope("visible")} style={button(scope === "visible" ? "var(--c-positive)" : "var(--ink-faint)", scope === "visible" ? "var(--c-positive)" : "transparent")}>Visible sheets</button>
         <button type="button" onClick={() => setScope("all")} style={button(scope === "all" ? "var(--c-positive)" : "var(--ink-faint)", scope === "all" ? "var(--c-positive)" : "transparent")}>Whole project</button>
+        <button data-testid="project-map-confirmed" type="button" onClick={() => setScope("confirmed")} style={button(scope === "confirmed" ? "var(--c-positive)" : "var(--ink-faint)", scope === "confirmed" ? "var(--c-positive)" : "transparent")}>Confirmées · projet</button>
       </div>
-      <div data-testid="project-map-list" style={{ marginTop: 10, display: "grid", gap: 5, maxHeight: selected ? 156 : 310, overflowY: "auto" }}>
+      <div data-testid="project-map-list" style={{ ...scrollSection, marginTop: 10, display: "grid", gridTemplateColumns: "minmax(0, 1fr)", alignContent: "start", gap: 5, flex: selected ? "2 1 0" : "1 1 0" }}>
         {!shown.length && <div style={{ padding: 12, border: "1px dashed var(--ink-faint)", color: "var(--ink-muted)", fontSize: 11.5 }}>No mapped zone in this scope. Click + Zone, then trace on the plan.</div>}
         {shown.map((region) => {
           const status = STATUS[region.review?.status] || STATUS.needs_review;
           const active = region.id === selectedRegionId;
-          return <button key={region.id} type="button" data-region-id={region.id} onClick={() => onSelect(region)} style={{ textAlign: "left", padding: "7px 9px", border: `1px solid ${active ? "var(--c-positive)" : "var(--ink-faint)"}`, borderLeft: `4px solid ${status.color}`, background: active ? "var(--surface-pop)" : "transparent", color: "var(--ink)", cursor: "pointer" }}>
-            <div style={{ display: "flex", gap: 7, alignItems: "baseline" }}><b style={{ fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{region.name}</b><span style={{ marginLeft: "auto", fontSize: 9.5, color: status.color }}>{status.label}</span></div>
+          return <button key={region.id} type="button" data-region-id={region.id} onClick={() => leaveWorkCard(() => onSelect(region))} style={{ textAlign: "left", padding: "7px 9px", border: `1px solid ${active ? "var(--c-positive)" : "var(--ink-faint)"}`, borderLeft: `4px solid ${status.color}`, background: active ? "var(--surface-pop)" : "transparent", color: "var(--ink)", cursor: "pointer" }}>
+            <div style={{ display: "flex", gap: 7, alignItems: "baseline" }}><b style={{ minWidth: 0, fontSize: 11.5, whiteSpace: "normal", overflowWrap: "anywhere" }}>{region.name}</b><span style={{ marginLeft: "auto", flexShrink: 0, fontSize: 9.5, color: status.color }}>{status.label}</span></div>
             <div style={{ marginTop: 2, fontFamily: "var(--f-mono)", fontSize: 9.5, color: "var(--ink-muted)" }}>{sheetLabel(region.sheet_id)} · {region.kind} · r{region.revision}</div>
           </button>;
         })}
       </div>
 
-      {selected && <section data-testid="project-map-card" style={{ borderTop: "1px solid var(--ink-faint)", marginTop: 11, paddingTop: 11 }}>
+      {selected && <section data-testid="project-map-card" style={{ ...scrollSection, flex: "3 1 0", borderTop: "1px solid var(--ink-faint)", marginTop: 11, paddingTop: 11 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}><b style={{ fontSize: 13.5 }}>{selected.name}</b><span style={{ marginLeft: "auto", color: (STATUS[selected.review?.status] || STATUS.needs_review).color, fontSize: 10.5, fontWeight: 700 }}>{(STATUS[selected.review?.status] || STATUS.needs_review).label}</span></div>
         <div style={{ marginTop: 3, fontFamily: "var(--f-mono)", fontSize: 9.5, color: "var(--ink-muted)" }}>{selected.id}<br />{selected.sheet_id} · {selected.kind} · revision {selected.revision}</div>
         <div style={{ marginTop: 8, display: "flex", gap: 5, flexWrap: "wrap" }}>{selected.purposes.map((purpose) => <span key={purpose} style={{ padding: "2px 5px", border: "1px solid var(--ink-faint)", fontSize: 9.5, textTransform: "uppercase" }}>{purpose}</span>)}</div>
@@ -162,18 +183,20 @@ export default function ProjectMapPanel({
         {selected.links?.length > 0 && <details style={{ marginTop: 8 }}><summary style={{ fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>Links ({selected.links.length})</summary>{selected.links.map((item) => <div key={item.id} style={{ marginTop: 4, fontSize: 10.5 }}>{item.type} → {item.tag || item.target_region_id || item.target_sheet_id || item.target_document_id}<span style={{ color: "var(--ink-muted)" }}> · {item.status || "unreviewed"} · {percent(item.confidence)}</span></div>)}</details>}
         {selected.parent_id && <div style={{ marginTop: 7, fontSize: 10.5 }}><b>Parent:</b> {regions.find((region) => region.id === selected.parent_id)?.name || selected.parent_id}</div>}
 
-        <label style={label}>Human explanation / correction context</label>
+        {onPreparationReady && <label style={{ display: "block", marginTop: 9, fontSize: 12 }}><input data-testid="map-preparation-ready" type="checkbox" disabled={workDirty} checked={Boolean(selected.preparation_ready)} onChange={e => onPreparationReady(selected.id, e.target.checked)} /> Prête pour GRUMP — j’ai fait le tour (aucun lancement)</label>}
+        {onSaveWorkContext && <RegionWorkCard key={`${selected.id}:${selected.revision}`} region={selected} regions={regions} products={products} onSave={onSaveWorkContext} onNavigate={onSelect} onStartPoi={onStartPoi} onDirty={setWorkDirty} />}
+        <label style={label}>Observation / commentaire de révision (distinct des consignes)</label>
         <textarea data-testid="project-map-note" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Example: ignore the VCT hatch and follow the wall centerline." rows={3} style={{ ...input, resize: "vertical" }} />
         <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 8 }}>
-          <button type="button" data-testid="project-map-accept" onClick={() => onReview(selected.id, "confirmed", note, "human_accept")} style={button("var(--c-positive)")}>Accept</button>
-          <button type="button" data-testid="project-map-needs-review" onClick={() => onReview(selected.id, "needs_review", note, "human_needs_review")} style={button("var(--c-warning)")}>Needs review</button>
-          <button type="button" data-testid="project-map-reject" onClick={() => onReview(selected.id, "rejected", note, "human_reject")} style={button("var(--c-danger)")}>Reject</button>
-          <button type="button" disabled={!note.trim() || note.trim() === (selected.review?.note || "")} onClick={() => onReview(selected.id, selected.review?.status || "needs_review", note, "human_explanation")} style={{ ...button("var(--cobalt)"), opacity: !note.trim() || note.trim() === (selected.review?.note || "") ? 0.45 : 1 }}>Save explanation</button>
+          <button type="button" disabled={workDirty} data-testid="project-map-accept" onClick={() => onReview(selected.id, "confirmed", note, "human_accept")} style={button("var(--c-positive)")}>Accept</button>
+          <button type="button" disabled={workDirty} data-testid="project-map-needs-review" onClick={() => onReview(selected.id, "needs_review", note, "human_needs_review")} style={button("var(--c-warning)")}>Needs review</button>
+          <button type="button" disabled={workDirty} data-testid="project-map-reject" onClick={() => onReview(selected.id, "rejected", note, "human_reject")} style={button("var(--c-danger)")}>Reject</button>
+          <button type="button" disabled={workDirty || !note.trim() || note.trim() === (selected.review?.note || "")} onClick={() => onReview(selected.id, selected.review?.status || "needs_review", note, "human_explanation")} style={{ ...button("var(--cobalt)"), opacity: workDirty || !note.trim() || note.trim() === (selected.review?.note || "") ? 0.45 : 1 }}>Save explanation</button>
         </div>
-        <div style={{ display: "flex", gap: 5, marginTop: 7 }}><button type="button" onClick={() => { onEdit(selected); setCollapsed(true); }} style={button("var(--ink-secondary)")}>Edit details & points</button><button type="button" onClick={() => onRedraw(selected.id)} style={button("var(--ink-secondary)")}>Manual redraw</button><button type="button" onClick={() => onDelete(selected.id)} style={button("var(--c-danger)")}>Delete</button></div>
+        <div style={{ display: "flex", gap: 5, marginTop: 7 }}><button type="button" onClick={() => leaveWorkCard(() => { onEdit(selected); setCollapsed(true); })} style={button("var(--ink-secondary)")}>Edit details & points</button><button type="button" onClick={() => leaveWorkCard(() => onRedraw(selected.id))} style={button("var(--ink-secondary)")}>Manual redraw</button><button type="button" onClick={() => leaveWorkCard(() => onDelete(selected.id))} style={button("var(--c-danger)")}>Delete</button></div>
         {selected.review?.reviewed_at && <div style={{ marginTop: 7, fontSize: 9.5, color: "var(--ink-muted)" }}>Last verdict by {selected.review.reviewed_by || "human"} · {selected.review.reviewed_at}{selected.review.reason_code ? ` · ${selected.review.reason_code}` : ""}</div>}
       </section>}
-      <button data-testid="project-map-new-zone" type="button" onClick={onStartNew} style={{ width: "100%", justifyContent: "center", marginTop: 13, ...button("var(--cobalt)", "var(--cobalt)") }}>+ Zone</button>
+      <button data-testid="project-map-new-zone" type="button" onClick={() => leaveWorkCard(onStartNew)} style={{ width: "100%", flexShrink: 0, justifyContent: "center", marginTop: 13, ...button("var(--cobalt)", "var(--cobalt)") }}>+ Zone</button>
     </>}
   </aside>;
 }

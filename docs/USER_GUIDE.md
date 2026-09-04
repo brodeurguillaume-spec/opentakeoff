@@ -1,5 +1,118 @@
 # OpenTakeoff — The User Manual
 
+## Repères GRUMP — préparation d’une zone
+
+Le clavier reste dans le panneau pendant la saisie : Backspace/Suppr n'effacent
+pas la zone sélectionnée derrière lui. Dans « Produits à calculer », décocher un
+produit le retire du périmètre de la fiche, sans supprimer le produit du projet.
+
+Les onglets Sheets utilisent toute la largeur disponible, sans limite de huit
+onglets. Si la place manque, la rangée défile horizontalement; le menu conserve
+l'accès à toutes les feuilles ouvertes.
+
+**Stack d’observation :** dans Sheets, sélectionnez de 2 à 12 feuilles dans
+l’ordre voulu, puis **Observer … en Stack**. Les pages se suivent verticalement
+dans un seul onglet bleu et une deuxième vue s’ouvre à côté du plan de travail.
+Glissez la séparation bleue pour répartir l’écran. Cette vue a son propre
+défilement, zoom et pan; la roulette défile et Ctrl+roulette zoome par pas. Seule
+la mesure K y est disponible. Ces mesures ne vont ni dans le take-off, ni dans
+les markups, ni dans les rapports; fermer le Stack les efface. Le plan de travail
+reste une vue d’opération normale. Les anciens Stacks verticaux enregistrés sont
+ouverts une fois dans ce mode d’observation sécurisé plutôt que comme surfaces
+éditables.
+
+Dans **Map**, sélectionnez une zone puis **Mark-ups / Repères GRUMP**, le bouton
+fixe en haut du panneau (hors de la partie défilante). Le grand panneau
+laisse place à une petite barre d’outils. **Ouvrir le panneau** donne accès aux
+libellés, à la navigation et à **Revenir à Project Map**. Ces repères appartiennent
+à la zone : ils ne sont ni des quantités, ni des markups ordinaires, et ne sont
+pas imprimés dans le rapport ou le jeu annoté standard.
+
+- **Note / Flèche** : consigne textuelle et direction (flèche en deux clics).
+- **Mesure K** : deux points sur une même feuille; dimension de référence à
+  l’échelle résolue, ou avertissement si l’échelle manque/est ambiguë. Aucun calcul
+  de quantité. Le deuxième point revient à l’outil de sélection des repères.
+- **Colonne** : signale de vérifier le revêtement derrière la colonne à l’aide
+  des plans/coupes liés. Ce marqueur n’affirme ni présence ni absence de revêtement.
+- **Repères jumelés** : premier clic sur la feuille de la zone source, deuxième
+  sur la vue correspondante; une seule paire partage le même identifiant. Le
+  jumeau est conventionnellement au RDC, sauf case d’exception. On peut préciser
+  une correspondance de vues ou d’éléments. **Voir 1/2** retrouve chaque feuille.
+- **Secteur à deux bornes** : deux clics sur la vue source, puis deux sur la vue
+  de référence, dans le même ordre. Le secteur identifie une largeur de travail;
+  il ne corrige pas une vue oblique et ne crée aucune surface.
+- **POI précis dans une zone liée** : enregistrez d’abord la fiche et son lien,
+  puis utilisez **+ POI précis** sous la référence. AnvilTrace ouvre la feuille
+  liée; deux coins encadrent exactement le détail à montrer. Le POI appartient à
+  la zone source, retient l’identifiant de la zone liée et demeure hors take-off.
+- **Axes X / Y** : A, B… AA ou 1, 2…; numéro de départ et libellé personnalisables.
+  **Ctrl+clic** place le dernier marqueur et termine la série. Échap/V revient
+  à la sélection sans effacer les repères déjà enregistrés.
+- **RDC ↕ / Étages + / Sous-sols −** : référence RDC code 100 (pas une altitude),
+  puis marqueurs manuels Étage 1… et SS1…; les noms restent modifiables.
+
+Pour travailler sur une autre feuille, utilisez les tabs, Sheets ou **Aller à une
+zone**. La zone propriétaire ne change pas. Une paire incomplète est conservée
+et peut être reprise avec **Compléter le repère**; son caractère incomplet est
+affiché. Le déplacement d’un repère se fait avec **V**, puis clic gauche maintenu
+sur son point ou son libellé. Suppr efface le repère sélectionné; **Ctrl+Z** annule,
+**Ctrl+Maj+Z** rétablit. Clic droit/roulette maintenu continue à déplacer la feuille.
+
+Les zones Project Map se déplacent également par clic gauche maintenu **dans leur
+surface**. Les poignées restent réservées aux sommets. Le déplacement conserve
+leurs dimensions et reste dans la feuille; les repères restent ancrés à leur
+emplacement sur le PDF. Ctrl+Z annule le déplacement. Un changement de géométrie
+peut modifier les associations d’échelle existantes : les contrôles de cohérence
+du take-off continuent de s’appliquer.
+
+**Prête pour GRUMP — j’ai fait le tour** est un état de révision humaine,
+facultatif, sans démarrage d’analyse. Modifier la fiche, un repère ou la géométrie
+retire cet état. Aucun renseignement détaillé n’est obligatoire pour un projet
+simple. Ce lot enregistre les consignes structurées; il ne fait pas encore la
+détection automatique des étages, la vérification derrière les colonnes, ni
+l’exécution automatique des tâches GRUMP.
+
+**Project Map V2 — fiche de préparation :** sélectionnez une zone pour écrire
+ses consignes particulières, cocher les produits du projet à calculer et lier
+des coupes/détails. Précisez le rôle de chaque lien et une note de contexte.
+Enregistrez la fiche avant de changer d'outil ou de zone. « Voir la zone » ouvre
+la référence liée; les références modifiées ou manquantes sont signalées.
+« Actualiser à r… » actualise la révision retenue après votre vérification; il
+faut ensuite enregistrer. Aucune sélection de produits signifie un périmètre
+non défini, jamais « tous les produits ». Les références ne sont pas des surfaces
+à additionner et gardent leurs propres échelles. La fiche est persistée dans le
+projet et son enregistrement est annulable par Ctrl+Z; elle ne valide pas un
+contour proposé et ne modifie aucune mesure. Ce premier lot ne transmet pas
+encore automatiquement la fiche à GRUMP, ne calcule rien et ne crée pas de
+produits depuis la bibliothèque. Les commentaires de révision restent distincts.
+Le filtre **Confirmées · projet** affiche toutes les zones acceptées, même sur
+des feuilles qui ne sont pas ouvertes, afin de vérifier rapidement la couverture
+du mappage et de naviguer vers une omission.
+
+**Retirer un plan dans AnvilTrace (projet sur disque) :** dans Sheets, utilisez
+**Retirer PDF**, sur la première page du document. La confirmation concerne toutes
+ses pages, jamais une seule feuille. Le PDF est déplacé dans `plans/.trash` du
+projet; l'original importé reste intact. Mesures, annotations et zones sont conservées,
+donc ce retrait ne retire pas leurs quantités du rapport. Réimportez le PDF identique
+sous le même nom pour retrouver le travail. Il n'y a pas encore d'interface de
+restauration de la corbeille ni de retrait individuel d'une page. Une erreur de
+retrait reste affichée dans la confirmation; vous pouvez réessayer ou annuler.
+
+**Project Map sizing:** drag the panel's lower-right corner to change its width and
+height, or use the ⤢ header button for a larger review workspace (click again for
+standard size). The proposal list and selected-zone details scroll independently
+and share the available height. The panel stays within the canvas on smaller screens.
+The ‹ side-collapse tab still works. Resizing changes only the interface, never zones.
+
+**Local GRUMP questionnaire (AnvilTrace):** open one sheet from the PDF to analyze,
+then use **Questionnaire · sources et consignes** in the left chat. Supply the
+representative's MSG/EML and images if needed; launch sends the supplied sources and
+PDF page images/text to Luna. This first slice accepts up to 12 PDF pages. Review the
+coverage summary and download the JSON evidence. Supported RDC/elevation sheets open
+as separate tabs, preserving your tabs. If you are drawing or on another PDF, use
+the result's open button when ready. No scale, geometry or product is modified;
+the library is not searched. This optional AI path is distinct from local-only manual work.
+
 OpenTakeoff is a takeoff canvas that runs in your browser. Open a plan, set the scale, trace the finishes — or let an AI agent stage the tracing while you keep the accept button — and walk away with a priced-out quantity report, a materials buy list, and a marked set you can send to a GC. Everything happens on your machine: no account, no upload, no install.
 
 This manual takes you from a blank browser tab to a finished, exported takeoff, and covers every shipped feature along the way. Shortcuts appear inline as you meet each tool; the complete table is in [§15](#15-keyboard-reference).
@@ -96,8 +209,8 @@ Nothing uploads anywhere. The file is read locally, rendered locally, and stored
 Press `G` (or click **Sheets** in the toolbar) for the visual gallery: one card per sheet, with its title-block sheet number, a thumbnail, and status badges — a level chip, **open** if it's already a tab, a shape count, and a scale status (**scale ✓** green, **plan: 1/4″ = 1′-0″** amber when a scale note was detected but not yet adopted, **no scale** red).
 
 - **Open one sheet**: hover a card and hit **View**.
-- **Open several**: click cards to select them — each gets a numbered badge, and that order controls their layout. Then choose **Open N as tabs**, **Open N side-by-side** (maximum **4**), or **Open N stacked** (maximum **12**). A stack is a reduced working set: the first selected sheet opens at a useful reading size and the following sheets continue below it. The ordinary mouse wheel scrolls through the stack; `Ctrl`+wheel zooms toward the pointer. Every sheet keeps its own scale, takeoffs and markups.
-- **Select the whole set**: use **Select all**, then open every page as tabs or apply one batch rotation. Side-by-side and stitch still accept 2–4 sheets; a vertical stack accepts up to 12 so a very large plan set stays bounded.
+- **Open several**: click cards to select them — each gets a numbered badge, and that order controls their layout. Then choose **Open N as tabs**, **Open N side-by-side** (maximum **4**), or **Observer N en Stack** (maximum **12**). The Stack is one temporary read-only observation tab beside the working canvas; it never carries persistent quantities or ordinary markups.
+- **Select the whole set**: use **Select all**, then open every page as tabs or apply one batch rotation. Side-by-side and stitch still accept 2–4 sheets; an observation Stack accepts up to 12 so a very large plan set stays bounded.
 - **Rename a page**: hover its card, click **Rename**, type the project-facing sheet name, then press `Enter` or **Save name**. This changes the saved OTO title, not the source PDF filename.
 - **Rotate pages**: select one or several cards, then use **↶ 90°**, **↷ 90°**, or **Reset rotation**. The orientation persists and carries existing takeoffs, markups, Map zones and exported marked sets with it. A page inside a stitched surface must be unstitched before it can rotate.
 - **Close a PDF**: hover the file's first card and hit **✕**. Takeoffs on its sheets are preserved and restore if you re-add the same file.
@@ -162,6 +275,14 @@ scans or flattened plots.
 
 The **☾** button in the zoom cluster inverts the sheet pixels themselves — a true negative print, white linework on black, not a CSS filter — with hatches retuned to stay legible. The setting persists per browser, and exports follow it: a dark canvas produces a dark Marked Set PDF.
 
+If a source PDF is encrypted or cannot be copied by the export library, the Marked Set uses
+the viewer's rendered background for that sheet (including stitched sheets). Light backgrounds
+are capped at 5600 pixels on the longest side and 24 megapixels; only the background loses
+unlimited vector zoom. Shapes, deduction outlines, quantities and included markups remain vector.
+The completion message identifies this compatibility mode; original files and measurements are
+not changed. A page that cannot render still produces an explicit sheet-labelled error, not a
+blank plan. **Include annotations** controls markups only, never the takeoff shapes.
+
 ---
 
 ## 3. Scale — set it first
@@ -190,6 +311,16 @@ No usable note? **Calibrate two points…**: click both ends of something the dr
 
 Press `K`, click the start and end points, and the measured length remains on the plan as a reference markup. It is not a Product quantity and does not enter the takeoff report. The tool returns to Select after the second click, so `V` and `Esc` also release it naturally.
 
+Placing the dimension does **not** open the Markups board. When you open that board yourself,
+reference dimensions live in a collapsed **Measurements** group so ordinary notes, clouds and
+callouts remain visible; expand the group only when you want to inspect those dimensions. Each
+row identifies its value as **DIMENSION — 0′ 0″**.
+
+At completion, a large **MESURE** box repeats the result for two seconds near the span. It is only
+a reading aid: it is never saved or selectable. The smaller persistent value remains on the plan;
+its offset follows the segment, sitting above horizontal/sloped dimensions and beside vertical
+ones so the number does not cross the measured line.
+
 For a broken or multi-part path, hold `Ctrl` while placing each intermediate point. Release `Ctrl` for the last click: every segment keeps its own length and the chain displays the combined total. The dimension remains deliberately low-priority when clicking, so takeoff geometry drawn at the same location wins unless you deliberately click the dimension line.
 
 Use `K` to sanity-check the selected scale against a printed dimension. If the result disagrees, recalibrate from the known dimension with **Calibrate two points…**; `K` itself never changes the scale.
@@ -217,6 +348,16 @@ The **`ft` / `m`** toggle beside the Scale chip switches the whole display layer
 <a id="4-conditions--your-finishes"></a>
 ## 4. Produits — ce que vous mesurez
 
+`+ Produit` demande d’abord un **TAG** libre : c’est l’étiquette courte ou longue affichée directement sur le plan. La fiche du Produit dans le panneau latéral permet ensuite d’ajouter une description complète et une catégorie sans bloquer le mesurage. Les Produits sont regroupés par catégorie au moyen d’un séparateur compact; le bouton `≡ cat` permet de désactiver temporairement ce regroupement.
+
+**Description et Notes au rapport.** Dans la fiche latérale du Produit, le champ facultatif
+**Notes au rapport** accepte plusieurs lignes (`Entrée`). La description complète et les notes
+apparaissent sous le TAG dans **Rapport → Imprimer le rapport**, aussi bien dans le tableau
+principal/regroupé que dans les détails par feuille. Les quantités gardent leurs colonnes.
+Ces textes ne changent pas les étiquettes du plan ni les calculs; ils sont sauvegardés dans le
+projet et conservés si tu enregistres le Produit dans la Bibliothèque. Ce ne sont pas des markups.
+Le jeu de plans annoté et les exports CSV/Excel conservent leur présentation actuelle.
+
 A **Produit** is the product or assembly a measurement belongs to — `BR-1`, `RV-1`,
 `M1`, `LVT-1`. The saved project/API still calls this object a `condition` for backward
 compatibility, but the working interface uses the estimator-facing name **Produit**.
@@ -241,7 +382,10 @@ The inline dimension fields are **H** (wall height), **T** (material thickness),
 (nominal item length). `L` is stored in inches and is especially useful for Count items such as
 36-inch anchors or lintels; it documents the component but never multiplies the EA quantity.
 
-There's no per-condition duplicate; the Library fills that role — read on.
+Use the cobalt **Copier** action on a Product row for a quick independent draft: it appears
+immediately below the source with the next free numeric suffix and a different colour/pattern,
+but an otherwise empty fiche and no copied measurements. **Variante liée pour une autre zone…**
+is the separate advanced workflow for Products that truly need a family relationship.
 
 ### The quick-access palette and `1`–`9`
 
@@ -249,12 +393,17 @@ The band under the toolbar is your working set: **pin** a condition there (the p
 
 ### The Takeoffs panel
 
-The **☰ Takeoffs** rail button docks the panel (it starts collapsed; the palette band is the primary surface). Five tabs:
+The **☰ Takeoffs** rail button docks the panel (it starts collapsed; the palette band is the primary surface). On a 1080p laptop or a resized window, Products and the left Markups/Stamps/RFIs desk automatically become overlay drawers instead of squeezing the plan; a full-height 2K workspace keeps the docked layout. **SOLO** temporarily keeps only Products for the current sheet visible; **ONGLETS** restores the full navigation. Five tabs:
 
 - **Takeoffs** — every condition with live totals for the open sheets (`SF · SF wall · LF · EA`), a shape count, a **⌖** that zooms the canvas to the condition's takeoffs (double-clicking the row does the same), the Supporting Materials button, the pin, and delete. Above the list: a filter box, **A→Z** natural sort and **≡ grp** tag-family grouping (views only — hotkey numbering never changes). **⌘-click / ⇧-click** rows to bulk-select conditions, then set waste or line color on all of them, or bulk-delete.
-- **Library** — reusable Product templates, shared across every plan in this browser. **+ save 〈tag〉 to the library** snapshots the active Product (appearance, waste, H/T/L, Count footprint, materials); **Apply** adds it to the current project as a fresh Product. New projects start empty: the library is available on demand and never injects unwanted Products automatically.
+- **Library** — reusable Product templates. Create/configure a Product in the current-sheet list,
+  activate it, then choose **+ enregistrer 〈Produit〉 dans la bibliothèque**; it is not necessary
+  to create the Product in Library first. The action snapshots its fiche but never its measured
+  shapes; **Apply** adds a fresh Product to the current project. With the GRUMP local bridge,
+  Library is disk-backed and shared across projects, while IndexedDB is only a reconstructible
+  cache. New projects start empty and never inject Library Products automatically.
 - **Ouvertures** — the current project's named deduction shapes. Select a deduction and save it explicitly, or choose an existing opening and click **Placer** before drawing another one. No automatic save prompt appears.
-- **Materials** — a browser-wide materials library. Attaching a library material to a condition copies its values and keeps a link (⛓); library edits reach linked lines only when you push them, and overridden fields show amber with a per-field ↺ revert.
+- **Materials** — the shared materials library (disk-backed through the GRUMP bridge). Attaching a library material to a Product copies its values and keeps a link (⛓); library edits reach linked lines only when you push them, and overridden fields show amber with a per-field ↺ revert.
 - **Columns** — project-wide **custom columns** (e.g. *CSI Division*) that classify conditions for report grouping and exports, and the **shape-label vocabulary** (§7).
 
 ### Supporting materials — the buy list's source
@@ -436,7 +585,16 @@ For the normal manual workflow, select the **Area** you want to cut and press **
 Linked deductions do not intercept an ordinary click through their interior. A deliberate click on
 one unique visible contour selects that outline; if outlines intersect, normal z-order decides.
 When the parent is not already selected, clicking its cut contour selects the parent first; once
-the parent is selected, the same contour can select the linked deduction for editing.
+the parent is selected, the same contour selects the linked deduction for editing. The deduction
+then remains selected: drag that contour to move it, or use `Ctrl+C` / `Ctrl+V` to duplicate it
+inside the same parent Area.
+
+Paste tries a small offset first. If that would leave the parent or cross a local scale zone,
+the copy starts exactly over the source and remains selected: drag it directly into place.
+Overlapping linked deductions subtract their union, never the same area twice. Their movement
+may remain temporarily overlapping; drawing a brand-new cut in an already-deducted space is
+still refused. Cross-sheet paste of a linked deduction remains blocked; use the opening library
+with the destination Area selected for that workflow.
 
 AnvilTrace also contains an experimental **repeated-deduction rule** engine. When enabled, a qualifying
 Cut Out can offer to repeat a similar enclosed deduction across matching rooms. It is **off by
@@ -521,7 +679,8 @@ never mixes two calibrations. Changing or deleting a scale zone re-prices affect
 shapes; if that would make any shape ambiguous, the edit itself is refused.
 
 Opening **Map** also opens the **Project Map** desk. **Visible sheets** keeps the list tied to
-the Canvas; **Whole project** shows every mapped sheet. Selecting a card opens its durable
+the Canvas; **Whole project** shows every mapped sheet; **Confirmées · projet** isolates
+ every accepted zone across the project. Selecting a card opens its durable
 profile: semantic type and purposes, overall and per-field review, scale and analysis profiles,
 confidence assessments, evidence, links, parent, revision, and last human verdict. The matching
 outline is emphasized on the plan; selecting a card from another sheet navigates to that sheet.
@@ -567,11 +726,12 @@ The **Snap** toggle pulls your cursor onto true PDF endpoints — real corners e
 ### The live readout
 
 The top-right readout tracks the armed tool: totals for the tracing tools, `W × H · SF · SY` for
-Rectangle, wall SF at the Takeoff Item height for Surface Area, and running One-Click selection
+Rectangle, surface at the Product height for Surface Area, and running One-Click selection
 totals. While a measuring tool is active, this live dimension chip takes priority over hovered
 item summaries. At **350% zoom and above**, imperial length feedback resolves to the nearest
-half-inch; below that threshold it stays at the nearest inch. Any run or side that reaches **12′
-turns the chip amber** — the roll-width warning rides every tool that measures a length.
+half-inch; below that threshold it stays at the nearest inch. Length alone no longer triggers
+the old 12-ft carpet-roll warning. Automatic Area perimeter × height / volume references are
+also dormant; their formulas are preserved in [the legacy register](LEGACY_TRADE_BEHAVIORS.md).
 
 ---
 
@@ -654,6 +814,16 @@ Arm **Select** (`V`) and click a shape. Shapes stack by kind — filled Areas at
 - **`⌫` with nothing else picked** deletes the shape.
 
 Quantities recompute live as you edit. Every completed gesture is one undo step (a drag that ends where it started records nothing), and editing a machine-made shape — One-Click or agent — grades it as *corrected* in its provenance, with the machine's original boundary frozen the first time you touch it. The **Edit** menu in the toolbar carries the same verbs — Copy, Paste, Duplicate, **Flip Horizontal**, **Flip Vertical**, Delete selected, Undo last point, Undo last shape, Redo — with their shortcuts beside them. Flip mirrors the selected shape about its own center (an isometry — SF/LF never change); it has no keyboard shortcut, only the menu.
+
+**Repeat with `T`.** In Select, pick a shape and press `T` to recall its exact tool and Product.
+Alternatively, pick a Product in the strip, palette, or right panel, then press `T` to recall
+that Product's last drawing tool. Deduction/opening tools, reference dimensions, and annotations
+never replace its drawing preference. When Count and linear distribution coexist, Product recall
+prefers **Répartition linéaire** over Count; explicitly picking a Count shape still recalls Count.
+Tool choices are remembered per Product for this session, including before placing a shape.
+After reopening, existing shapes across all pages supply the fallback. An empty Product uses the
+last measurement tool (Area initially). Finish or cancel any pending trace before using `T`;
+typing `t` in a TAG, description, or other field remains ordinary text.
 
 ### Copy, paste, duplicate
 
@@ -771,7 +941,20 @@ Open **Report** for the whole takeoff on one page: a per-condition table, the su
 
 ### Columns, grouping, templates, theme
 
-- **Columns** — choose what the table (and the CSV) shows. Defaults: Finish, Shapes, Surface SF, Wall SF, Border SF, LF, EA, Waste, SF w/Waste, SY w/Waste. Opt-ins: Total SF, Waste SF, Waste LF, Perimeter LF (reference only — includes openings, never totaled). Roll-goods conditions add **Roll Order LF**, **Rolls**, and **Seam LF** ([§4](#4-conditions--your-finishes)). Custom condition columns, imported product-spec columns (manufacturer, style, color, size, description — from a schedule import), and Labor Type / Subfloor Type (typed into a condition's Supporting Materials panel) appear once they exist. **Labor view** switches to a no-waste actuals set (Total SF in, SF/SY w/Waste out) for tying quantities to labor — attach your own rates externally.
+**Regrouper et trier sont distincts.** `Regrouper` crée les sections par feuille, zone du Project
+Map, catégorie de Produit ou colonne personnalisée. `Trier` choisit l’ordre des Produits à
+l’intérieur des groupes : ordre manuel du panneau Produits, ou `TAG A → Z` (BR2 avant BR10).
+Le tri du rapport ne réordonne pas tes Produits sur le plan et n’affecte aucun total.
+
+**Unités génériques.** Le tableau affiche **Surface SF**, **LF** et **EA** : surfaces,
+longueurs et unités. Area/Rectangle produit une surface; Surface Area (`S`) calcule une
+surface à partir d’une longueur et d’une hauteur explicite. Linear conserve sa longueur
+et, si renseignée explicitement, sa surface longueur × épaisseur. Toutes les surfaces
+sont réunies, nettes des déductions et avant pertes. Le type de Produit et le Project Map
+portent le sens métier. Les clés et en-têtes CSV/Excel historiques restent inchangés;
+l’ancienne séparation Floor/Wall/Border est [documentée et isolée](LEGACY_TRADE_BEHAVIORS.md).
+
+- **Colonnes** — choose what the table shows. Table defaults: Produit, Shapes, Surface SF, LF, EA, Waste, SF w/Waste, SY w/Waste. Opt-ins: Waste SF, Waste LF, Perimeter LF (reference only — includes openings, never totaled). Previously configured roll-goods conditions retain **Roll Order LF**, **Rolls**, and **Seam LF** ([§4](#4-conditions--your-finishes)). Custom condition columns, imported product-spec columns (manufacturer, style, color, size, description — from a schedule import), and Labor Type / Subfloor Type (typed into a condition's Supporting Materials panel) appear once they exist. **Labor view** switches to a no-waste actuals set for tying quantities to labor — attach your own rates externally. CSV/Excel keep their legacy method columns for compatibility.
 - **Group** — break the table into sections with subtotals: by **Sheet**, by **Label** (once shapes carry labels), or by any custom column. Grouping by a column always carries that column into the CSV.
 - **Templates** — save a column-plus-grouping layout by name and recall it on this device. Signed in on a team build, **Push to Drive / Load from Drive** carries templates across your own devices — Load only adds what this device doesn't have; it never overwrites a same-name template.
 - **Theme** — import a design-token file (a `tokens.json`) to reskin the report's palette and fonts for output. **Reset** returns the house style.
@@ -817,7 +1000,10 @@ If a saved project fails to load, autosave **pauses itself** and a banner says s
 Inside the local **GRUMP project shell**, PDF cache records are namespaced by project. Opening a
 new project therefore starts with no browser PDF inherited from another project; its own durable
 `plans` folder rehydrates only that project's cache. The anonymous standalone workspace remains
-separate, and templates, materials, and stamps remain intentionally shared browser libraries.
+separate. Product templates, materials and stamps are shared across local projects through
+`<catalogue>/.anviltrace/libraries/*.atlib`, not through the Chrome profile. The first shell launch
+that finds no disk library copies the existing IndexedDB library without deleting it. From then on,
+the disk file is authoritative and IndexedDB is only a cache that can be rebuilt.
 
 ### Optional: projects on Drive
 
@@ -1022,6 +1208,7 @@ Every shortcut in the app, verified against the code. Letter keys are suppressed
 | `H` | Highlighter |
 | `K` | Place a persistent reference dimension; `Ctrl`+click extends another segment |
 | `V` | Select |
+| `T` | Repeat a selected shape's exact tool, or recall the chosen Product's last drawing tool (strip/panel); Product recall excludes deductions and prefers distribution over Count |
 | `G` | Sheet gallery |
 | Hold `M` | Push-to-talk dictation — release runs the command, `Esc` discards (see [§17](#17-voice--the-command-box)) |
 | `?` | The in-app quick reference — the five-minute path and every shortcut (`Esc` closes) |
@@ -1051,6 +1238,7 @@ Every shortcut in the app, verified against the code. Letter keys are suppressed
 
 | Key / action | Action |
 |---|---|
+| `T` | Repeat the selected takeoff's exact tool, or recall the Product chosen in the strip/panel: last drawing tool, never a deduction; distribution beats Count for mixed Products |
 | `⌘C` | Copy the shape |
 | `⌘V` | Paste under the cursor — lands on the sheet you're hovering |
 | `⌘D` | Duplicate |
@@ -1095,7 +1283,13 @@ the engine reads as a wall, at every notch. Trace it with Area (`A`), or on a CA
 
 **⌘Z won't bring something back.** Three known cases: condition deletes cascade their shapes outside the undo stack (deliberate — the confirm warned you); rescaling a sheet resets the stack; restoring a revision resets the stack (but banked your live takeoff first — check Revisions). The stack also caps at 100 steps, and markup moves aren't on it at all.
 
-**"Where did my work go?"** Work lives in the browser that made it, per origin. Same machine, different browser (or profile, or port) = a different workspace. If a load ever fails, autosave pauses and a banner appears — reload the tab to retry; your saved takeoff is untouched. For anything you can't afford to lose, save a **Revision** and export the report; if the browser warns about storage space, delete old snapshots or unused PDFs.
+**"Where did my work go?"** In the standalone Web build, work lives in the browser that made it,
+per origin. Same machine, different browser (or profile, or port) = a different workspace. Inside
+the local GRUMP / AnvilTrace shell, the project folder and `.atlib` libraries are authoritative;
+changing Chrome profiles only rebuilds the cache. If a load ever fails, autosave pauses and a
+banner appears — reload the tab to retry; your saved takeoff is untouched. For anything you can't
+afford to lose, save a **Revision** and export the report; if the browser warns about storage
+space, delete old snapshots or unused PDFs.
 
 **The Agent panel won't run.** It needs AI settings (endpoint + model; key optional) — the empty state links you there. Tools refusing with *"Set the scale…"* is the scale gate working: set the sheet's scale, run again. Proposals that won't accept usually sit on a sheet that's been closed since — open it and accept. `⏎` accepts only when nothing is mid-draw.
 

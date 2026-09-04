@@ -4,8 +4,96 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 
 ## Unreleased — GRUMP loopback bridge
 
+### Fixed — Project Map keyboard and navigation
+
+- Isolate the preparation panel from drawing shortcuts, including Backspace and
+  Delete on labels/product controls; preserve native text editing and text undo.
+- Keep **Mark-ups / Repères GRUMP** outside the scrolling zone details.
+- Remove the eight-sheet-tab cap; use the full available width and a horizontally
+  scrollable single row on smaller screens, keeping the active sheet in view.
+
 ### Added
 
+- A selected set of Sheets can open as one blue **observation Stack** in a
+  separate resizable viewport beside the operation canvas. It owns independent
+  pan/scroll/zoom and ephemeral K checks, while persistent shapes, markups and
+  serialized tabs remain structurally inaccessible. Closing the Stack drops it;
+  legacy editable vertical groups migrate into this guarded view.
+- Project Map links can now carry an exact two-corner **POI** on the linked zone's
+  sheet. POIs persist as human preparation guides with the target region id and
+  never enter quantities or ordinary markup. A project-wide confirmed filter
+  provides a compact accepted-zone audit across hidden sheets.
+
+- Zone-owned **Repères GRUMP** layer with notes, arrows, K reference dimensions,
+  column-check instructions, two-point cross-sheet pairs, four-point sectors,
+  X/Y series and manual above/below-ground floor markers. Draft pairs persist;
+  ordinary quantities/markups and exports remain untouched.
+- Whole Project Map zone translation, draggable guide anchors, delete/undo,
+  preparation review flag, reference sheet navigation and rotation-safe twins.
+  These are human preparation tools, not automatic AI interpretation.
+
+- Project Map V2 preparation cards: human instructions, project product selection,
+  typed direct zone references with pinned revisions, stale/missing warnings and
+  linked-zone navigation. Additive persistence and undo; no geometry approval,
+  repricing, AI call or automatic GRUMP task generation on card save.
+
+- Disk-backed AnvilTrace: explicit **Retirer PDF** gallery action and recoverable
+  whole-document confirmation. Existing measures/markups/map zones are preserved;
+  reports are not purged. Failed disk removal no longer evicts the PDF cache first;
+  the dialog reports errors and guards duplicate submissions. Drive behavior retained.
+
+- Resizable Project Map review panel with an enlarge/restore button, growing proposal
+  list, wrapped zone names, and independent detail scrolling. Canvas bounds remain
+  enforced on laptop screens; geometry and model configuration are unchanged.
+
+- GRUMP documentary questionnaire can open its supported ground-floor and general
+  elevation sheets as separate tabs, preserving existing tabs. Navigation is
+  document-hash guarded, refuses during active work and never runs on journal replay.
+  The local gateway stores sources, evidence and review results; it does not modify
+  products, takeoff shapes or scales and does not query the library in this V1.
+
+- Generic measurement presentation now aggregates Area/Rectangle/Surface Area/explicit
+  line-width surfaces into one Surface quantity across Products, HUD, Report and Marked Set.
+  Historic floor/wall/border keys and CSV/Excel contracts remain intact. The 12-ft carpet
+  warning, inferred Area perimeter × height references and coverage suggestions are dormant
+  behind a documented legacy feature boundary. Starter flooring templates are moved verbatim
+  to an archive module with backward-compatible exports; existing configured materials keep
+  their calculations. See `docs/LEGACY_TRADE_BEHAVIORS.md`.
+
+- Printed takeoff reports now include each Product's full description and optional multiline
+  **Notes au rapport**, beneath its TAG in both summary/grouped rows and per-sheet breakdowns.
+  Notes persist with the project and explicitly saved library templates; they never enter
+  measurement totals or the opt-in contribution payload. Report surface headers describe
+  the actual method (Tracée / L × H / L × ép.), not an inferred floor/wall classification.
+  **Trier** selects manual Product order or natural TAG order within the chosen grouping;
+  the toolbar wraps on smaller screens. Existing CSV keys/headers remain compatible.
+
+- Marked Set exports fall back to a bounded PDF.js-rendered background for encrypted or
+  non-copyable source pages, including stitched sheets. Vector attempts are isolated and flushed
+  before appending, so failed embeds cannot poison the output. Shapes and markups remain vector;
+  the UI discloses fallback and identifies the sheet if rendering also fails.
+
+- **`T` also recalls a Product's drawing tool from the strip/panel.** Per-Product session
+  memory and project-wide geometry fallback exclude deductions, openings and markups.
+  Linear distribution wins the Count conflict; explicitly selected shapes retain their exact
+  repeat behavior. Pending traces are protected and text fields keep ordinary typing.
+
+- Product records now separate the plan-facing TAG from an optional full description, expose the category beside the other Product details, and default the right-panel list to compact category grouping.
+
+- **`T` repeats a selected takeoff with one key.** From Select, click an existing shape and
+  press `T`; its Product becomes active and the matching Count, Area, Rectangle, Linear,
+  Curved Line, Surface Area or deduction tool is armed immediately. Existing project files
+  infer Rectangle versus Area from geometry, while new shapes preserve the exact source tool.
+- **A height-aware Laptop layout preserves the drawing viewport.** At 1080p-class content heights
+  or narrow/resized windows, Products and the Markups/Stamps/RFIs desk become overlay drawers,
+  the top bar tightens and remains horizontally reachable, and saved panel widths are respected.
+  Full-height 2K workstations retain the spacious docked layout.
+
+- **GRUMP local projects no longer depend on IndexedDB for shared libraries.** Product templates,
+  materials and stamps migrate once from the active browser profile into atomic, integrity-checked
+  `.atlib` files under the AnvilTrace project catalog. Disk is authoritative after migration;
+  IndexedDB is refreshed only as a reconstructible cache, and revision preconditions prevent two
+  project windows from silently overwriting one another.
 - **Product categories now organize both work and reporting.** The Product picker's type is no
   longer dormant metadata: `≡ cat` groups the current-sheet list into Brique, Pierre, Allège and
   the other business categories while preserving manual order inside each one, and the Report can
@@ -14,8 +102,13 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
   on the plans around their centre; Y and joint changes also refresh existing linear distributions.
   Nominal length stays informational on ordinary Counts and remains functional only for linear
   distribution, where it defines the piece length and count.
-- **Product duplication is visible on the row.** The new `⎘` action opens the existing named-copy
-  workflow directly instead of hiding it at the bottom of Supporting Materials.
+- **Product duplication is now a direct, visible action.** The cobalt **Copier** button creates an
+  independent empty Product immediately after the source, chooses the first free numeric suffix
+  (`Produit 1`, `Produit 2`, …), and advances its colour and pattern. The specialized linked-variant
+  workflow remains available under its own explicit label instead of intercepting an ordinary copy.
+- **The Products dock can focus on daily takeoff work.** `SOLO` hides Library, Openings, Materials
+  and Columns while preserving the current-sheet Product list; `ONGLETS` restores them. This is
+  independent of the existing collapsed panel and `STRIP` presentation.
 - **Products now have a durable manual order.** Every row shows its canonical one-based position;
   selecting a Product turns that badge into discreet up/down arrows and an editable 1–99 position
   field committed with `Enter`. Moving one Product closes the gap and shifts the rest of the list
@@ -35,7 +128,12 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
   dimension and return to Select; holding `Ctrl` while clicking extends a
   multi-segment chain whose individual lengths and total remain on the plan.
   Reference dimensions stay deliberately below takeoff geometry in click
-  priority and do not enter quantities.
+  priority and do not enter quantities. Placing one no longer opens the Markups
+  board; the board keeps them in a collapsed **Measurements** group until the
+  estimator deliberately opens it. Completion now shows a large two-second
+  **MESURE** confirmation while the persistent label remains slightly larger
+  and offsets above horizontal runs or beside vertical runs. Measurement rows
+  read `DIMENSION — 0′ 0″` instead of an empty markup placeholder.
 - **A project now has an explicit opening/deduction library.** A selected deduction can be named and
   saved on demand after tracing, or a saved opening can be armed before placement against a selected
   parent Area. Templates store real-foot geometry, so the same door or window places at the right
@@ -154,6 +252,28 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 - **The bridge now tells GRUMP which PDF and sheet are actually visible.** Document, active sheet, and side-by-side sheet IDs are published as transient context rather than journaled takeoff facts. This lets the shell filter its durable proposal queue without deleting hidden work; selecting a proposal on another open sheet navigates there before applying the temporary highlight.
 
 ### Fixed
+- **Linked-deduction clipboard paste no longer silently fails at a parent or local-scale boundary.**
+  Paste retries the source position when its nudge is invalid, selects the new copy for movement,
+  and permits quantity-neutral overlap. Moving the copy while it overlaps is also supported;
+  fresh drawing still refuses duplicate cuts. Rigid paste no longer clamps individual vertices.
+- **Toolbar menus now stay above the drawing surface.** Scale, Sheets, Edit and the other
+  dropdowns render in a viewport-level portal instead of inside the horizontally scrollable top
+  bar, so the bar can no longer clip them behind the PDF. Long menus remain scrollable and are
+  clamped to the available screen height, including the 1080p laptop layout.
+- **The Products header no longer overlaps at practical panel widths.** Product, Library,
+  Openings, Materials and Columns wrap in their own lane; `SOLO`, `STRIP` and collapse controls
+  occupy a separate right-aligned lane instead of painting over the Columns tab.
+- **Linked deductions stay selected for editing.** After the deliberate parent-then-deduction
+  selection, pressing or dragging that contour no longer toggles immediately back to the parent
+  Area. Once the parent is selected, the empty opening body can also select the deduction; once the
+  deduction is open, either its interior or contour can move it. Ordinary positive geometry keeps
+  click priority outside that explicit parent context, and copy/paste retains the atomic hole.
+  Rigid moves preserve the deduction quantity instead of re-resolving its Map scale zone, so
+  crossing a zone boundary no longer makes the opening spring back to its original position.
+- **Deleting a copied linked deduction now rebuilds its parent through the parent’s resolved Map
+  scale.** Zone-only sheets no longer fall through to a plain shape delete that leaves the removed
+  opening baked into the parent surface and quantity. If reconciliation is ever ambiguous, the
+  deletion is refused and both linked shapes are kept instead of silently corrupting the net area.
 - **Closing or merely browsing Project Map no longer leaves the mouse pointer invisible.** The OS
   cursor now yields only while a real aim/drawing crosshair is active; switching Map back to Select
   restores it synchronously instead of waiting for another click or pointer event.

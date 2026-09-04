@@ -118,8 +118,12 @@ export function rotateApprovalForSheet(approval, sheetId, delta) {
 }
 
 export function rotateRegionForSheet(region, sheetId, delta) {
-  if (!region || region.sheet_id !== sheetId) return region;
+  if (!region) return region;
+  const guides = region.guides?.map(g => ({ ...g, points: g.points.map(p => p.sheet_id === sheetId ? { ...p, at: rotateNormPoint(p.at, delta) } : p) }));
+  if (region.sheet_id !== sheetId) return guides && region.guides.some(g => g.points.some(p => p.sheet_id === sheetId)) ? { ...region, guides, preparation_ready: false } : region;
   const next = { ...region };
+  if (guides) next.guides = guides;
+  if (region.preparation_ready) next.preparation_ready = false;
   if (region.geometry && Array.isArray(region.geometry.verts_norm)) {
     next.geometry = { ...region.geometry, verts_norm: rotatePoints(region.geometry.verts_norm, delta) };
   }

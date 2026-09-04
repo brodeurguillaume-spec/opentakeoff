@@ -68,11 +68,11 @@ const START = [
 export const TOOLS = [
   [["O"], "One-Click Area — click inside a room, it selects itself"],
   [["A"], "Area"], [["R"], "Rectangle"], [["L"], "Linear"], [["Q"], "Curved Line"],
-  [["S"], "Surface Area (walls)"], [["C"], "Count"],
+  [["S"], "Surface Area (longueur × hauteur)"], [["C"], "Count (unités)"],
   [["E"], "Deduct polygon from the selected Area"], [["⇧", "E"], "Deduct rectangle from the selected Area"],
   [["D"], "Automatic / free deduct polygon"], [["⇧", "D"], "Automatic / free deduct rectangle"],
   [["H"], "Highlighter"], [["K"], "Persistent reference dimension; Ctrl+click adds another segment, final click without Ctrl completes"],
-  [["V"], "Select"], [["G"], "Sheet gallery"],
+  [["V"], "Select"], [["T"], "Repeat a shape, or recall the chosen Product's last tool (no deductions; distribution before Count)"], [["G"], "Sheet gallery"],
   [["1", "–", "9"], "Arm takeoff item N"],
   [["hold", "M"], "Push-to-talk dictation — release runs it, Esc discards"],
 ];

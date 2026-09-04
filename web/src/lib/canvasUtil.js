@@ -64,6 +64,8 @@ export const instantiateTemplate = (t) => ({
   id: uid("cnd"), created_at: nowIso(), finish_tag: t.finish_tag || "?",
   color: t.color || PALETTE[0], fill: t.fill ?? t.color ?? PALETTE[0],
   hatch: t.hatch || "solid", multiplier: 1, waste_pct: Number(t.waste_pct) || 0,
+  ...(t.description ? { description: t.description } : {}),
+  ...(typeof t.report_notes === "string" && t.report_notes ? { report_notes: t.report_notes } : {}),
   ...(t.product_type ? { product_type: t.product_type } : {}),
   ...(t.height_ft != null ? { height_ft: t.height_ft } : {}),
   ...(t.thickness_in != null ? { thickness_in: t.thickness_in } : {}),

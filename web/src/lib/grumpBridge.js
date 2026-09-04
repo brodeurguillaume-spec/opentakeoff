@@ -121,7 +121,7 @@ export function shouldApplyRegionProposal(existing, proposed) {
   return proposedRevision > existingRevision;
 }
 
-export function createGrumpBridge({ applyTakeoff, applyRegionProposal = async (_payload, _event) => {}, applyProposalAction = async (_payload, _event) => {}, applyProposalFact = async (_type, _payload, _event) => {}, applyProposalFocus = async (_payload) => {}, applyGeometryCapture = async (_type, _payload, _event) => {}, getContext = /** @type {() => any} */ (() => null), onError = () => {}, windowLike = window, documentLike = document }) {
+export function createGrumpBridge({ applyTakeoff, applyRegionProposal = async (_payload, _event) => {}, applyProposalAction = async (_payload, _event) => {}, applyProposalFact = async (_type, _payload, _event) => {}, applyProposalFocus = async (_payload) => {}, applyGeometryCapture = async (_type, _payload, _event) => {}, openQuestionnaireSheets = async (_payload) => { if (_payload == null) return 0; throw new Error("Mise à jour du Canvas requise pour ouvrir les feuilles du questionnaire."); }, getContext = /** @type {() => any} */ (() => null), onError = () => {}, windowLike = window, documentLike = document }) {
   const parentOrigin = bridgeParent(windowLike.location, documentLike.referrer);
   if (!parentOrigin || windowLike.parent === windowLike) return null;
   let sessionId = null;
@@ -278,6 +278,16 @@ export function createGrumpBridge({ applyTakeoff, applyRegionProposal = async (_
     }
     if (data.kind === "proposal.focus" && data.session_id === sessionId) {
       await applyProposalFocus(data.payload || {});
+      return;
+    }
+    // Explicit ephemeral message, never replayed from the event journal.
+    if (data.kind === "questionnaire.open" && sessionId && data.session_id === sessionId) {
+      try {
+        const count = await openQuestionnaireSheets(data.payload || {});
+        post({ kind: "questionnaire.opened", session_id: sessionId, count, request_id: data.payload?.request_id });
+      } catch (error) {
+        post({ kind: "questionnaire.opened", session_id: sessionId, error: String(error?.message || error), request_id: data.payload?.request_id });
+      }
       return;
     }
     const event = data.event;

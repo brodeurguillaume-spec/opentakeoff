@@ -2,6 +2,40 @@
 
 # OpenTakeoff
 
+**Repères GRUMP** adds zone-owned preparation notes, arrows, reference dimensions,
+column checks, cross-sheet twin/sector markers, X/Y axes and manual floor levels.
+Drag markers or whole Project Map zones; undo uses the existing history. A human
+“ready” flag never launches AI. Preparation marks remain outside quantities and
+ordinary markups. See the User Manual for the workflow and current limitations.
+
+The **Mark-ups / Repères GRUMP** action stays visible at the top of Project Map.
+Keyboard input inside that panel cannot delete the selected zone behind it.
+Open sheet tabs use the full available width, with horizontal overflow on smaller
+screens instead of an eight-tab cap.
+
+Sheets can now create a **Stack d’observation**: all selected pages live in one
+blue tab and a separate, resizable PDF viewport beside the working canvas. It has
+independent scroll/zoom/pan and temporary K measurements, but no path to persistent
+takeoff shapes or ordinary markups. Closing its tab discards the Stack and its checks.
+
+Project Map V2 preparation cards attach human instructions, project products and
+revision-aware links to sections/details to each zone. These are saved context,
+not an automatic GRUMP execution feature; no quantities change when saving a card.
+Each link may also own a named two-corner **POI** crop on the linked sheet, and the
+review desk can list every confirmed zone across the project for a quick audit.
+
+AnvilTrace's disk-backed Sheets gallery exposes **Retirer PDF** on the first page:
+confirmed removal archives the whole PDF in the project's `plans/.trash`, keeps
+annotations and leaves the imported source file untouched. It does not remove quantities.
+
+Project Map can be resized from its lower-right corner or enlarged with its header button;
+the proposal list grows with the panel and long zone names wrap without horizontal scrolling.
+
+The optional local GRUMP gateway now includes a supervised documentary questionnaire
+(active PDF up to 12 pages plus supplied mail/images). Its results can open supported
+ground-floor/elevation sheets as tabs without importing or changing measurements.
+Sources are sent to the configured Luna API only when the questionnaire is launched.
+
 **The measurement engine for building plans — built so an AI agent can drive it, and so an estimator wants to.**
 
 A takeoff is the act of measuring quantities off a construction drawing. OpenTakeoff does it
@@ -281,7 +315,13 @@ Count**, and **Cut Out** deducts. Count places a calibrated 1′ square by defau
 and that Takeoff Item reuses the same real-size symbol across sheets. Select an Area and press
 **`E`** to create an explicitly
 linked opening whose geometry, parent hole, duplication, deletion, and undo/redo stay atomic;
-`D` remains the automatic/free deduction path. A **Zone check** answers "what's in this wing?"
+linked copies can start over their source if the usual nudge leaves the parent or scale zone,
+without subtracting an overlapping opening twice. The new copy stays selected for placement.
+From Select, click any existing takeoff and press **`T`** to reactivate its Product and repeat its
+exact drawing tool without returning to the rail. `D` remains the automatic/free deduction path.
+Or pick a Product in the strip/panel and press `T` to recall its last drawing tool, excluding
+deductions. For a Product with both Counts and distributed pieces, distribution wins over Count.
+A **Zone check** answers "what's in this wing?"
 without touching the takeoff.
 
 **Project Map** is the durable companion: trace and name sheet-scoped rooms, plans,
@@ -396,7 +436,7 @@ sheets — the gap between panels isn't real distance, so the commit refuses and
 stitching.
 
 ### Reports, exports, and revisions
-A per-item breakdown — **Floor / Wall / Border SF, LF, EA, total SF, SY**, with and
+A per-product breakdown — **Surface SF, LF, EA, SY**, with and
 without waste — plus a combined **materials buy list**. Waste applies only in the report's
 order quantity, never to the live measured number, so the takeoff and the buy list stay honest
 about which is which. Export **CSV**, **JSON**, a real **Excel workbook** (Summary / By-sheet /
@@ -404,6 +444,17 @@ Materials / Shapes-audit / **By floor × room**, full-precision cells, formula-s
 inert text), print,
 or **Marked Set PDF** — a distribution-ready planset built entirely in your browser for a GC
 who will never install anything.
+Encrypted or otherwise non-copyable source PDFs use a bounded rendered background when the
+viewer can read them; takeoff shapes and markups stay vector, and the export reports this fallback.
+
+Product descriptions and optional multiline **Notes au rapport** print beneath the TAG in the
+takeoff report, including grouped and per-sheet rows. **Regrouper** chooses sheet, Project Map
+zone or Product category; **Trier** independently chooses manual Product order or natural TAG
+order. All measuring methods feed generic Surface / Length / Count quantities, not a physical wall/floor classification.
+Existing CSV column names remain unchanged for compatibility.
+Historic roll-width warnings, automatic perimeter extrusions and trade starter presets are
+isolated and dormant, not deleted. See [the legacy-behavior register](docs/LEGACY_TRADE_BEHAVIORS.md)
+for original formulas, compatibility boundaries and reactivation requirements.
 
 When the addendum lands, **Revisions** makes it data instead of archaeology: save a named
 revision at each bid revision, then compare any two as quantity deltas per condition, per
@@ -449,6 +500,12 @@ Every drawing, scale, condition, markup, and RFI autosaves to **your browser** (
 localStorage). Nothing is uploaded, there's no account, and there's no server in the default
 build. The flip side is stated plainly in the manual: storage is per browser, per origin, and
 clearing site data clears your work.
+
+When the same Canvas runs inside the local **GRUMP / AnvilTrace shell**, the loopback Bridge makes
+the project folder authoritative. Plans, takeoff and revisions live on disk, and Product,
+material and stamp libraries live as portable `.atlib` files under the project catalog.
+IndexedDB remains only a fast, reconstructible render/data cache in that mode; an existing browser
+library migrates automatically the first time its disk file is created.
 
 <details>
 <summary><strong>Optional: team cloud mode (Google sign-in + Drive)</strong></summary>
@@ -513,7 +570,7 @@ plus a vision-capable model id.
 | **Markups** | Clouds, callouts, notes, highlighter, stamps, **approval seals**, RFI register — separate layer, never counted |
 | **Voice** | Push-to-talk takeoff commands, recognized on-device in WebAssembly; audio never leaves the browser |
 | **View** | Light or **dark (negative print)** — sheet pixels inverted at draw time, exports follow |
-| **Storage** | IndexedDB + localStorage — client-only, nothing uploaded |
+| **Storage** | Standalone Web: IndexedDB + localStorage. Local AnvilTrace shell: disk-authoritative projects and `.atlib` libraries, with IndexedDB as cache only |
 | **MCP server** | 40 tools + browsable sheet resources on stdio, multi-document sessions ([`mcp/`](mcp/README.md)) |
 | **Provenance** | Every shape records its scale, its method, its confidence, and whether a person or an agent made it |
 | **Capture (opt-in)** | Bundled [capture server](capture/README.md) banks each contributed takeoff as (geometry → label) training rows |

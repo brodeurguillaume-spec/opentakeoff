@@ -12,12 +12,48 @@ const empty = {
   conditions: [], shapes: [], markups: [], sheets: [],
 };
 
-function response(body: any, status = 200, type = "application/json") {
+test("plan removal archives on disk before evicting cached bytes, without touching measurements", async () => {
+  const calls: string[] = [];
+  const base: any = { removePdf: async (name: string) => { calls.push(`cache:${name}`); } };
+  const fetchLike: any = async (url: string, init: any) => {
+    calls.push(`${init.method}:${url}`);
+    return response({ removed: true });
+  };
+  const store = createGrumpProjectStore(base, "bid-42", fetchLike);
+  assert.equal(store.planRemovalPolicy, "project-trash");
+  await store.removePdf("A 1.pdf");
+  assert.deepEqual(calls, ["DELETE:/api/project/plans/A%201.pdf", "cache:A 1.pdf"]);
+});
+
+test("failed plan removal preserves the cache and can be retried", async () => {
+  let cached = true;
+  let refused = true;
+  const base: any = { removePdf: async () => { cached = false; } };
+  const fetchLike: any = async () => refused
+    ? response({ message: "PDF verrouillé" }, 409)
+    : response({ removed: true });
+  const store = createGrumpProjectStore(base, "bid-42", fetchLike);
+  await assert.rejects(store.removePdf("A.pdf"), /PDF verrouillé/);
+  assert.equal(cached, true);
+  refused = false;
+  await store.removePdf("A.pdf");
+  assert.equal(cached, false);
+});
+
+function response(body: any, status = 200, type = "application/json", headers: Record<string, string> = {}) {
   return new Response(type === "application/json" ? JSON.stringify(body) : body, {
     status,
-    headers: { "content-type": type },
+    headers: { "content-type": type, ...headers },
   });
 }
+
+const library = (kind: string, data: any, revision = `${kind}-rev-1`) => ({
+  schema: "anviltrace.library.v1",
+  kind,
+  revision,
+  updated_at: "2026-09-01T12:00:00+00:00",
+  data,
+});
 
 test("grump project scope requires the explicit loopback bridge URL", () => {
   assert.equal(grumpProjectIdFromUrl(new URL("http://127.0.0.1/canvas?grumpBridge=1&grumpProject=bid-42") as any), "bid-42");
@@ -88,6 +124,113 @@ test("disk takeoff is canonical and rehydrates IndexedDB", async () => {
   const store = createGrumpProjectStore(base, "bid-42", async () => response(disk));
   assert.deepEqual(await store.loadAnnotations(), disk);
   assert.deepEqual(saved, disk);
+});
+
+test("first library load migrates IndexedDB once and makes disk canonical", async () => {
+  const cached = [{ finish_tag: "BR-CACHE" }];
+  const sanitizedCache = [{ finish_tag: "BR-CACHE", materials: [] }];
+  const writes: any[] = [];
+  const base: any = {
+    loadTemplates: async () => cached,
+    saveTemplates: async (value: any) => { writes.push(value); },
+  };
+  let exists = false;
+  const fetchLike: any = async (url: string, init: any = {}) => {
+    assert.equal(url, "/api/project/libraries/products");
+    if (!init.method && !exists) return response({ error: "library_not_found" }, 404);
+    if (init.method === "PUT") {
+      assert.equal(init.headers["If-None-Match"], "*");
+      exists = true;
+      return response(library("products", JSON.parse(init.body)));
+    }
+    return response(library("products", [{ finish_tag: "BR-DISK" }]));
+  };
+  const store = createGrumpProjectStore(base, "bid-42", fetchLike);
+
+  assert.deepEqual(await store.loadTemplates(), sanitizedCache);
+  assert.deepEqual(writes, [sanitizedCache]);
+  assert.deepEqual(await store.loadTemplates(), [{ finish_tag: "BR-DISK", materials: [] }]);
+  assert.deepEqual(writes.at(-1), [{ finish_tag: "BR-DISK", materials: [] }]);
+});
+
+test("library writes reach disk before the IndexedDB cache and carry revision guards", async () => {
+  const order: string[] = [];
+  const base: any = {
+    loadMaterialLibrary: async () => [],
+    saveMaterialLibrary: async () => { order.push("cache"); },
+  };
+  let first = true;
+  const fetchLike: any = async (_url: string, init: any = {}) => {
+    if (!init.method) return response(library("materials", [], "rev-1"));
+    assert.equal(init.headers["If-Match"], "rev-1");
+    order.push("disk");
+    first = false;
+    return response(library("materials", JSON.parse(init.body), "rev-2"));
+  };
+  const store = createGrumpProjectStore(base, "bid-42", fetchLike);
+  await store.loadMaterialLibrary();
+  order.length = 0;
+  await store.saveMaterialLibrary([{ id: "m1", name: "Mortier Type N" }]);
+
+  assert.equal(first, false);
+  assert.deepEqual(order, ["disk", "cache"]);
+});
+
+test("a disk library conflict never advances the IndexedDB cache", async () => {
+  let cacheWrites = 0;
+  const base: any = {
+    loadStampLibrary: async () => ({ stamps: [], sets: [] }),
+    saveStampLibrary: async () => { cacheWrites += 1; },
+  };
+  const fetchLike: any = async (_url: string, init: any = {}) => {
+    if (!init.method) return response(library("stamps", { stamps: [], sets: [] }, "rev-1"));
+    return response({ message: "modified elsewhere" }, 409);
+  };
+  const store = createGrumpProjectStore(base, "bid-42", fetchLike);
+  await store.loadStampLibrary();
+  cacheWrites = 0;
+
+  await assert.rejects(
+    store.saveStampLibrary({ stamps: [{ id: "s1", name: "Note", elements: [] }], sets: [] }),
+    /modified elsewhere/,
+  );
+  assert.equal(cacheWrites, 0);
+});
+
+test("IndexedDB failure cannot block a disk-authoritative library", async () => {
+  const diskProducts = [{ finish_tag: "BR-DISK" }];
+  const base: any = {
+    loadTemplates: async () => { throw new Error("IndexedDB unavailable"); },
+    saveTemplates: async () => { throw new Error("IndexedDB quota exceeded"); },
+  };
+  const fetchLike: any = async (_url: string, init: any = {}) => {
+    if (!init.method) return response(library("products", diskProducts, "rev-1"));
+    return response(library("products", JSON.parse(init.body), "rev-2"));
+  };
+  const store = createGrumpProjectStore(base, "bid-42", fetchLike);
+
+  assert.deepEqual(await store.loadTemplates(), [{ finish_tag: "BR-DISK", materials: [] }]);
+  assert.deepEqual(await store.saveTemplates([{ finish_tag: "BR-NEXT" }]), [{ finish_tag: "BR-NEXT", materials: [] }]);
+});
+
+test("a first shell launch can create an empty disk library without IndexedDB", async () => {
+  const base: any = {
+    loadStampLibrary: async () => { throw new Error("IndexedDB unavailable"); },
+    saveStampLibrary: async () => { throw new Error("IndexedDB unavailable"); },
+  };
+  let created: any = null;
+  const fetchLike: any = async (_url: string, init: any = {}) => {
+    if (!init.method && !created) return response({ error: "library_not_found" }, 404);
+    if (init.method === "PUT") {
+      created = JSON.parse(init.body);
+      return response(library("stamps", created, "rev-empty"));
+    }
+    return response(library("stamps", created, "rev-empty"));
+  };
+  const store = createGrumpProjectStore(base, "bid-42", fetchLike);
+
+  assert.deepEqual(await store.loadStampLibrary(), { stamps: [], sets: [] });
+  assert.deepEqual(created, { stamps: [], sets: [] });
 });
 
 test("disk mirror adds the takeoff schema before sending a raw canvas payload", async () => {

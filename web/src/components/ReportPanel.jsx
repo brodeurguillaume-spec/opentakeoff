@@ -5,6 +5,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../brand/icons.jsx";
 import ToolMenu from "./ToolMenu.jsx";
+import ReportProduct from "./ReportProduct.jsx";
+import { surfaceQuantity } from "../lib/measurementPresentation.js";
+import { sortReportRows, loadReportSort, saveReportSort } from "../lib/reportPresentation.js";
 import { conditionTotals, grandTotals, sheetTotals, sheetGroupedRows, labelGroupedRows, mapZoneGroupedRows, sheetLabelGroupedRows, round2, totalsToCsv, downloadText, materialsSummary, reportJson, hasMultipliers, BY_SHEET_BASE_NOTE } from "../lib/totals.js";
 import { TABLE_PROFILE, CSV_PROFILE, colGetter, customColProfile, specColProfile, laborColProfile, rollColProfile, partitionRowsBy, forceIncludeGroupCol, loadColPrefs, saveColPrefs, loadGroupBy, saveGroupBy, visibleCols, floorPerimeterLf, applyUnits } from "../lib/reportColumns.js";
 import { rollReportRows, seamLfByShape } from "../lib/rollTakeoff.js";
@@ -34,6 +37,7 @@ const DISCLAIMER = "Quantités tirées des plans selon les échelles indiquées;
 // one-line hints for the opt-in columns in the picker (waste hint sits under
 // the second waste checkbox so it reads once for the pair)
 const COL_HINTS = {
+  total_sf: "Surface mesurée, quelle que soit la méthode de tracé. Déductions déjà prises en compte; pertes non appliquées.",
   waste_lf: "Waste SF/LF = (w/Waste) − measured",
   perimeter_ref: "Perimeter is reference only — includes openings; not totaled",
 };
@@ -81,8 +85,9 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   // welding on every sheet. Empty map for a project with no roll goods, which
   // makes every seam_lf row read 0 — the honest answer before a layout exists.
   const seamCtx = useMemo(() => ({ seamByShape: seamLfByShape(rollByCond) }), [rollByCond]);
-  const rows = useMemo(() => conditionTotals(conditions, shapes, seamCtx).filter((r) => r.shape_count > 0), [conditions, shapes, seamCtx]);
-  const bySheet = useMemo(() => sheetTotals(conditions, shapes), [conditions, shapes]);
+  const [sortOrder, setSortOrder] = useState(loadReportSort);
+  const rows = useMemo(() => sortReportRows(conditionTotals(conditions, shapes, seamCtx).filter((r) => r.shape_count > 0), sortOrder), [conditions, shapes, seamCtx, sortOrder]);
+  const bySheet = useMemo(() => sheetTotals(conditions, shapes).map((group) => ({ ...group, rows: sortReportRows(group.rows, sortOrder) })), [conditions, shapes, sortOrder]);
   const condById = useMemo(() => new Map(conditions.map((condition) => [condition.id, condition])), [conditions]);
   const deductionsBySheet = useMemo(() => {
     const grouped = new Map();
@@ -223,9 +228,10 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
     ? mapZoneGroupedRows(conditions, shapes, regions, seamCtx).map((group) => ({ ...group, label: group.sheet_id && sheetLabel ? `${sheetLabel(group.sheet_id)} · ${group.label}` : group.label }))
     : null), [groupBy, conditions, shapes, regions, seamCtx, sheetLabel]);
   const productTypeGroups = useMemo(() => (groupBy === "product-type" ? partitionRowsByProductType(rows, conditions) : null), [groupBy, rows, conditions]);
-  const groups = sheetGroups
+  const unsortedGroups = sheetGroups
     ? sheetGroups.map((gp) => ({ value: gp.sheet_id, label: sheetLabel ? sheetLabel(gp.sheet_id) : gp.sheet_id, rows: gp.rows, perimByCond: gp.perimByCond }))
     : labelGroups || mapGroups || productTypeGroups || colGroups;
+  const groups = unsortedGroups?.map((group) => ({ ...group, rows: sortReportRows(group.rows, sortOrder) }));
   const grouped = Boolean(groups && (groups.length > 1 || ((groupCol || groupBy === "label" || groupBy === "map-zone" || groupBy === "product-type") && groups.length === 1 && groups[0].value !== null)));
   // exports always carry the by-label breakdown when any shape is labeled,
   // independent of the current group-by view; empty (→ CSV/JSON byte-unchanged)
@@ -365,7 +371,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
     "application/json");
 
   const th = { textAlign: "right", padding: "7px 6px", fontFamily: "var(--f-mono)", fontSize: 12.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--ink-muted)", borderBottom: "1.25px solid var(--ink)", whiteSpace: "nowrap" };
-  const td = { textAlign: "right", padding: "8px 6px", fontVariantNumeric: "tabular-nums", borderBottom: "1px solid var(--ink-faint)", whiteSpace: "nowrap" };
+  const td = { textAlign: "right", verticalAlign: "top", padding: "8px 6px", fontVariantNumeric: "tabular-nums", borderBottom: "1px solid var(--ink-faint)", whiteSpace: "nowrap" };
 
   // one condition-table cell, keyed off the column profile; values come
   // through the shared colGetter so the table and the CSV read the same
@@ -386,12 +392,8 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
     switch (col.key) {
       case "finish":
         return (
-          <td key={col.key} style={{ ...td, textAlign: "left" }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <span style={{ width: 12, height: 12, background: r.color, display: "inline-block", border: "1px solid var(--ink-faint)" }} />
-              <strong style={{ fontFamily: "var(--f-mono)", fontWeight: 600 }}>{r.finish_tag}</strong>
-              {r.multiplier > 1 && <span style={{ color: "var(--ink-muted)", fontSize: 11 }}>×{r.multiplier}</span>}
-            </span>
+          <td key={col.key} style={{ ...td, textAlign: "left", whiteSpace: "normal", maxWidth: 320 }}>
+            <ReportProduct row={r} product={condById.get(r.id)} />
           </td>
         );
       case "shapes":
@@ -426,9 +428,9 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
 
   return (
     <div className="report-panel" style={{ ...theme.vars, position: "absolute", inset: 0, zIndex: 50, display: "flex", flexDirection: "column", background: "var(--paper-cream)" }}>
-      <div className="report-toolbar" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: "1px solid var(--ink)", background: "var(--paper-bright)" }}>
+      <div className="report-toolbar" style={{ display: "flex", flexWrap: "wrap", flexShrink: 0, alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: "1px solid var(--ink)", background: "var(--paper-bright)" }}>
         <Icon name="takeoffs" size={18} />
-        <strong style={{ fontFamily: "var(--f-display)", fontSize: 16, color: "var(--ink)" }}>Rapport de prise de quantités</strong>
+        <strong style={{ fontFamily: "var(--f-display)", fontSize: 16, color: "var(--ink)", flexShrink: 0 }}>Rapport de prise de quantités</strong>
         <input name="project-name" value={projectName} onChange={(e) => onProjectName(e.target.value)} placeholder="Nom du projet (facultatif)"
           className="field-input" style={{ width: 260, padding: "5px 9px", fontSize: 13 }} />
         <div style={{ flex: 1 }} />
@@ -437,7 +439,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
         {/* always rendered, even with zero custom columns — Sheet grouping
             is useful on its own */}
         <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "var(--ink)", whiteSpace: "nowrap" }}
-          title="Break the takeoff-item table into sections with subtotals">
+          title="Créer des sections par feuille, zone, catégorie de Produit ou colonne personnalisée, sans modifier les quantités">
           Regrouper :
           <select name="report-group-by" value={groupBy} onChange={(e) => { setGroupByRaw(e.target.value); saveGroupBy(e.target.value); }}
             style={{ padding: "5px 6px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 12, maxWidth: 180 }}>
@@ -451,12 +453,21 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
             ))}
           </select>
         </label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "var(--ink)", whiteSpace: "nowrap" }}
+          title="Ordre des Produits à l’intérieur de chaque groupe du rapport; ne change pas leur position dans le panneau Produits">
+          Trier :
+          <select name="report-sort" value={sortOrder} onChange={(e) => { setSortOrder(e.target.value); saveReportSort(e.target.value); }}
+            style={{ padding: "5px 6px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", fontSize: 12 }}>
+            <option value="manual">Ordre des Produits</option>
+            <option value="tag">TAG A → Z</option>
+          </select>
+        </label>
         <div ref={colsRef} style={{ position: "relative" }}>
-          <button className="btn-ghost" onClick={() => setShowCols((s) => !s)} title="Choose which columns the table and CSV show">Columns</button>
+          <button className="btn-ghost" onClick={() => setShowCols((s) => !s)} title="Choisir les colonnes visibles du rapport et des exports">Colonnes</button>
           {showCols && (
             <div className="report-modal" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 70, width: 272, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)", padding: "10px 12px", fontSize: 12.5, color: "var(--ink)" }}>
               <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
-                <strong style={{ fontFamily: "var(--f-display)", fontSize: 13 }}>Columns</strong>
+                <strong style={{ fontFamily: "var(--f-display)", fontSize: 13 }}>Colonnes</strong>
                 <div style={{ flex: 1 }} />
                 <button onClick={applyLaborPreset} title="No-waste actuals per takeoff item — hides SF/SY w/Waste, shows Total SF"
                   style={{ border: "none", background: "transparent", color: "var(--cobalt)", cursor: "pointer", fontSize: 11.5, padding: "0 10px 0 0" }}>Labor view</button>
@@ -803,8 +814,10 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
         )}
         {rows.length > 0 && (
           <p style={{ maxWidth: 980, margin: "14px auto 0", fontSize: 11.5, color: "var(--ink-muted)", lineHeight: 1.6 }}>
-            <strong>{AU} w/Waste</strong> = measured quantity × waste %. Waste is set per takeoff item in the canvas. Wall {AU} comes from Surface-Area
-            traces (run × height); Border {AU} from Linear runs with a thickness.{M ? " Supporting-material coverage rates stay as entered (SF/LF-based)." : ""}
+            <strong>Surface {AU}</strong> = surface mesurée, nette des déductions, avant pertes.
+            {" "}<strong>{LU}</strong> = longueur; <strong>EA</strong> = unités comptées.
+            {" "}<strong>{AU} w/Waste</strong> = surface mesurée × (1 + pertes % / 100).
+            {" "}Le Produit et le Project Map définissent l’usage métier; l’outil ne le présume pas.{M ? " Les couvertures des matériaux conservent leurs unités saisies (SF/LF)." : ""}
             {tableCols.some((c) => c.key === "perimeter_ref") && (
               <> Perim {LU} (ref) sums floor-trace perimeters — includes door openings and shared walls; reference only, never totaled or waste-adjusted.</>
             )}
@@ -826,8 +839,6 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
                     <tr>
                       <th style={{ ...th, textAlign: "left" }}>Produit</th>
                       <th style={th}>Surface {AU}</th>
-                      <th style={th}>Mur {AU}</th>
-                      <th style={th}>Bordure {AU}</th>
                       <th style={th}>{LU}</th>
                       <th style={th}>EA</th>
                     </tr>
@@ -835,16 +846,10 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
                   <tbody>
                     {gp.rows.map((r) => (
                       <tr key={r.id}>
-                        <td style={{ ...td, textAlign: "left" }}>
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                            <span style={{ width: 12, height: 12, background: r.color, display: "inline-block", border: "1px solid var(--ink-faint)" }} />
-                            <strong style={{ fontFamily: "var(--f-mono)", fontWeight: 600 }}>{r.finish_tag}</strong>
-                            {r.multiplier > 1 && <span style={{ color: "var(--ink-muted)", fontSize: 11 }}>×{r.multiplier}</span>}
-                          </span>
+                        <td style={{ ...td, textAlign: "left", whiteSpace: "normal", maxWidth: 320 }}>
+                          <ReportProduct row={r} product={condById.get(r.id)} />
                         </td>
-                        <td style={td}>{sheetNum(areaVal(r.floor_sf, units))}</td>
-                        <td style={td}>{sheetNum(areaVal(r.wall_sf, units))}</td>
-                        <td style={td}>{sheetNum(areaVal(r.border_sf, units))}</td>
+                        <td style={td}>{sheetNum(areaVal(surfaceQuantity(r), units))}</td>
                         <td style={td}>{sheetNum(lenVal(r.lf, units))}</td>
                         <td style={td}>{sheetNum(r.ea, 0)}</td>
                       </tr>

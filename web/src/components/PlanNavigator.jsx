@@ -53,7 +53,7 @@ export default function PlanNavigator({
   // plan-set (gallery) data
   sheets, getDoc, scales, detectedScales, scaleUnconfirmed = {}, shapes, labels, titles = {}, rotations = {}, onLabel, onDetect, onRename, onRotate,
   thumbCacheRef, busyRef, openTabs, onOpen,
-  onAddFiles, onClosePdf, onRemoveFromProject,
+  onAddFiles, onClosePdf, onRemoveFromProject, planRemovalPolicy,
   onCloseProject, onBrowseProjects,
   levels = {}, onAssignLevel,
   // stitches (#161): persisted match-line composites — created from a 2..MAX_GROUP
@@ -65,6 +65,7 @@ export default function PlanNavigator({
   const navigate = useNavigate();
   const { user, signIn } = useGoogleAuth();
   const browseEnabled = cloudMode && typeof listFolder === "function";
+  const recoverableRemoval = planRemovalPolicy === "project-trash";
   const [mode, setMode] = useState(browseEnabled && initialMode === "browse" ? "browse" : "plan");
 
   // ── shared: swallow canvas shortcuts while mounted (capture phase, every mode) ──
@@ -151,6 +152,9 @@ export default function PlanNavigator({
   const [driveErr, setDriveErr] = useState("");
   const [addMenu, setAddMenu] = useState(false);
   const [confirmClose, setConfirmClose] = useState(null);   // { file, shapeCount } | null
+  const [removalPending, setRemovalPending] = useState(false);
+  const [removalError, setRemovalError] = useState("");
+  const removalBusyRef = useRef(false);
   const [renaming, setRenaming] = useState(null);           // { key, value, error } | null
   const [actionMsg, setActionMsg] = useState("");
   const [, bump] = useState(0);
@@ -311,23 +315,36 @@ export default function PlanNavigator({
   // independent of the back button's per-level folder climb.
   useEffect(() => {
     escRef.current = () => {
+      if (removalBusyRef.current) return;
+      if (confirmClose) { setConfirmClose(null); return; }
       if (mode === "browse") { setMode("plan"); return; }
       if (canClose) onExit();
     };
-  }, [mode, canClose, onExit]);
+  }, [mode, canClose, onExit, confirmClose]);
 
   // ── close / remove a PDF from the working set ───────────────────────────
-  const requestClose = (file) => setConfirmClose({ file, shapeCount: pdfShapeCount(file) });
-  const doClose = async () => {
-    const { file } = confirmClose;
-    setConfirmClose(null);
-    await onClosePdf(file);
+  const requestClose = (file) => {
+    setRemovalError("");
+    setConfirmClose({ file, shapeCount: pdfShapeCount(file) });
   };
-  const doRemove = async () => {
+  const performRemoval = async (action) => {
+    if (removalBusyRef.current) return;
     const { file } = confirmClose;
-    setConfirmClose(null);
-    await onRemoveFromProject(file);
+    removalBusyRef.current = true;
+    setRemovalPending(true);
+    setRemovalError("");
+    try {
+      await action(file);
+      setConfirmClose(null);
+    } catch (error) {
+      setRemovalError(`Retrait non terminé : ${error?.message || error}. Vous pouvez réessayer.`);
+    } finally {
+      removalBusyRef.current = false;
+      setRemovalPending(false);
+    }
   };
+  const doClose = () => performRemoval(onClosePdf);
+  const doRemove = () => performRemoval(onRemoveFromProject);
 
   // ══ RENDER ════════════════════════════════════════════════════════════════
   const title = mode === "browse" ? "Add sheets from Drive" : "Plan set";
@@ -522,8 +539,8 @@ export default function PlanNavigator({
                 <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", border: isSel ? "none" : "1.5px solid var(--ink-faint)", background: isSel ? "var(--cobalt)" : "var(--paper-bright)", color: "var(--paper-bright)", fontFamily: "var(--f-mono)", fontSize: 12, fontWeight: 700 }}>{isSel ? idx + 1 : ""}</span>
                 <div style={{ position: "absolute", top: 8, right: 8, zIndex: 2, display: "flex", gap: 6 }}>
                   {isFirstPageOfPdf && onClosePdf && (
-                    <button onClick={(e) => { e.stopPropagation(); requestClose(parsed.file); }} title={cloudMode ? "Close this PDF — unload it from the plan set (it stays in Drive)" : "Close this PDF — remove it from the plan set (local plans aren't stored elsewhere)"}
-                      style={{ padding: "5px 8px", border: "none", background: "var(--paper-bright)", color: "var(--ink-muted)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 11, boxShadow: "var(--shadow-1)" }}>✕</button>
+                    <button onClick={(e) => { e.stopPropagation(); requestClose(parsed.file); }} title={recoverableRemoval ? "Retirer ce PDF complet du projet — toutes ses pages (récupérable)" : cloudMode ? "Close this PDF — unload it from the plan set (it stays in Drive)" : "Close this PDF — remove it from the plan set (local plans aren't stored elsewhere)"}
+                      style={{ padding: "5px 8px", border: "none", background: "var(--paper-bright)", color: "var(--ink-muted)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 11, boxShadow: "var(--shadow-1)" }}>{recoverableRemoval ? "Retirer PDF" : "✕"}</button>
                   )}
                   {onRename && (
                     <button onClick={(e) => { e.stopPropagation(); startRename(key); }} title="Rename this page without changing its PDF file"
@@ -647,9 +664,9 @@ export default function PlanNavigator({
             <Icon name="sideBySide" size={14} />Open {sel.length >= 2 ? sel.length : ""} side-by-side
           </button>
           <button disabled={sel.length < 2 || sel.length > MAX_STACK} onClick={() => onOpen(sel, "column")}
-            title={sel.length > MAX_STACK ? `A vertical stack maxes at ${MAX_STACK} sheets — make a smaller working set` : "Open the selected sheets in one scrollable top-to-bottom working set"}
+            title={sel.length > MAX_STACK ? `A vertical stack maxes at ${MAX_STACK} sheets — make a smaller observation set` : "Open a temporary read-only stack beside the working plan; only K measurements are allowed"}
             style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "8px 14px", border: "none", background: sel.length >= 2 && sel.length <= MAX_STACK ? "var(--cobalt)" : "var(--ink-faint)", color: "var(--paper-bright)", cursor: sel.length >= 2 && sel.length <= MAX_STACK ? "pointer" : "default", fontWeight: 700, fontSize: 12.5 }}>
-            ↕ Open {sel.length >= 2 ? sel.length : ""} stacked
+            ↕ Observer {sel.length >= 2 ? sel.length : ""} en Stack
           </button>
           {onStitch && (
             <button disabled={sel.length < 2 || sel.length > MAX_GROUP} onClick={() => onStitch(sel)}
@@ -687,26 +704,29 @@ export default function PlanNavigator({
 
   // ── close/remove confirmation ───────────────────────────────────────────
   const confirmDialog = confirmClose && (
-    <div onClick={() => setConfirmClose(null)} style={{ position: "absolute", inset: 0, zIndex: 5, background: "var(--scrim)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <div onClick={(e) => e.stopPropagation()} className="panel" style={{ width: 440, maxWidth: "100%", background: "var(--paper-bright)", boxShadow: "var(--shadow-2)", padding: "18px 20px" }}>
-        <strong style={{ fontFamily: "var(--f-display)", fontSize: 15, color: "var(--ink)" }}>Close “{confirmClose.file}”?</strong>
+    <div onClick={() => { if (!removalBusyRef.current) setConfirmClose(null); }} style={{ position: "absolute", inset: 0, zIndex: 5, background: "var(--scrim)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div role="dialog" aria-modal="true" aria-labelledby="plan-removal-title" onClick={(e) => e.stopPropagation()} className="panel" style={{ width: 440, maxWidth: "100%", maxHeight: "100%", overflowY: "auto", background: "var(--paper-bright)", boxShadow: "var(--shadow-2)", padding: "18px 20px" }}>
+        <strong id="plan-removal-title" style={{ fontFamily: "var(--f-display)", fontSize: 15, color: "var(--ink)" }}>{recoverableRemoval ? `Retirer « ${confirmClose.file} » du projet ?` : `Close “${confirmClose.file}”?`}</strong>
         <p style={{ fontSize: 12.5, color: "var(--ink-muted)", lineHeight: 1.6, margin: "10px 0 4px" }}>
-          {cloudMode
+          {recoverableRemoval
+            ? "Toutes les pages de ce PDF seront retirées. La copie du projet sera déplacée dans sa corbeille sur disque; le fichier original importé reste intact. Les mesures, annotations et zones ne sont pas supprimées. Ce retrait ne nettoie pas les quantités du rapport."
+            : cloudMode
             ? "Closing removes it from this plan set so it stops loading — the file stays in your Drive project and you can re-add it any time from Browse Drive."
             : "This removes the PDF from the plan set. Local plans aren't stored anywhere else, so you'll have to re-open the file to get it back."}
           {confirmClose.shapeCount > 0 && (
-            <><br /><span style={{ color: "var(--c-warning)" }}>This PDF has {confirmClose.shapeCount} takeoff{confirmClose.shapeCount === 1 ? "" : "s"} — they're preserved and restore if you re-add the same file.</span></>
+            <><br /><span style={{ color: "var(--c-warning)" }}>{recoverableRemoval ? `${confirmClose.shapeCount} mesure(s) conservée(s). Pour retrouver ce travail sur le plan, réimportez le même PDF sous le même nom.` : `This PDF has ${confirmClose.shapeCount} takeoffs — they're preserved and restore if you re-add the same file.`}</span></>
           )}
         </p>
+        {removalError && <p role="alert" style={{ color: "var(--c-danger)", overflowWrap: "anywhere" }}>{removalError}</p>}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16, flexWrap: "wrap" }}>
-          <button onClick={() => setConfirmClose(null)} style={{ ...ctrlBtn, color: "var(--ink-muted)" }}>Cancel</button>
+          <button disabled={removalPending} onClick={() => setConfirmClose(null)} style={{ ...ctrlBtn, color: "var(--ink-muted)" }}>{recoverableRemoval ? "Annuler" : "Cancel"}</button>
           {cloudMode && onRemoveFromProject && (
-            <button onClick={doRemove} title="Permanently delete the PDF from the Drive project"
+            <button disabled={removalPending} onClick={doRemove} title="Permanently delete the PDF from the Drive project"
               style={{ ...ctrlBtn, border: "1px solid var(--c-danger)", color: "var(--c-danger)" }}>Delete from Drive</button>
           )}
-          <button onClick={doClose}
+          <button disabled={removalPending} onClick={doClose}
             style={{ ...ctrlBtn, border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", fontWeight: 700 }}>
-            {cloudMode ? "Close (keep in Drive)" : "Remove"}
+            {removalPending ? "Retrait…" : recoverableRemoval ? "Retirer le PDF du projet" : cloudMode ? "Close (keep in Drive)" : "Remove"}
           </button>
         </div>
       </div>

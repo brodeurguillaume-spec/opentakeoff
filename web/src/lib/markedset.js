@@ -23,6 +23,7 @@
 
 import { PDFDocument, StandardFonts, rgb, degrees, LineCapStyle } from "pdf-lib";
 import { conditionTotals, sheetTotals, roundSheetRow, hasMultipliers, BY_SHEET_BASE_NOTE } from "./totals.js";
+import { surfaceQuantity } from "./measurementPresentation.js";
 import { approvalInk, approvalTally, APPROVAL_R } from "./approvals.js";
 import { pointInPoly, starPath, arrowheadPath, cloudBezier, chiselRibbon } from "./geometry.js";
 import { transformPath, svgPlacedBox } from "./svgpath.js";
@@ -35,11 +36,11 @@ import { normalizeQuarterTurn } from "./sheetPresentation.js";
 import { markupTextLines } from "./markupText.js";
 import { conditionFillOpacity, conditionLineWidthPx } from "./conditionAppearance.js";
 import { linearCountPieces, linearCountUnitsPerPx } from "./linearCount.js";
+import { appendMarkedBackground, markedRasterScale, markedSetSourceLoader } from "./markedSetSource.js";
 
 const COBALT = "#1f3fc7";
 const DEDUCT_RED = "#b03a26";
 const DARK_BG = [0.055, 0.07, 0.09];       // matches the canvas dark stage
-const RASTER_MAX = 2800;                    // dark-mode raster cap, long side px
 
 // hatch style → parallel-line families [angleDeg, pitch(image px)] that match
 // the canvas pattern's geometric read; decorative styles approximate — the
@@ -245,7 +246,7 @@ function shapeChip(shape, cond, M = false) {
   switch (shape.measure_role) {
     case "floor_area": return `${tag} · ${num(uA(cp.area_sf || 0))} ${AU}`;
     case "deduct": return `-${num(uA(cp.area_sf || 0))} ${AU} deduct`;
-    case "surface_area": return `${tag} · ${num(uA(cp.area_sf || 0))} ${AU} wall`;
+    case "surface_area": return `${tag} · ${num(uA(cp.area_sf || 0))} ${AU}`;
     case "linear": return `${tag} · ${num(uL(cp.perimeter_lf || 0))} ${LU}`;
     case "count_run": return `${tag} · ${num(cp.count || 0)} EA × ${num(cp.unit_length_in || shape.count_run?.unit_length_in || 0)} in`;
     default: return "";
@@ -445,8 +446,8 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
       // zero-gate on the CONVERTED value — what the page prints (a 0.5 SF
       // sliver reads 0.0 m2 in metric; it must drop, not print "0 m2")
       const qty = [
-        shows(uA(r.floor_sf)) ? `${num(uA(r.floor_sf))} ${AU}` : "", shows(uA(r.wall_sf)) ? `${num(uA(r.wall_sf))} ${AU} wall` : "",
-        shows(uA(r.border_sf)) ? `${num(uA(r.border_sf))} ${AU} border` : "", shows(uL(r.lf)) ? `${num(uL(r.lf))} ${LU}` : "", shows(r.ea, 0) ? `${num(r.ea, 0)} EA` : "",
+        shows(uA(surfaceQuantity(r))) ? `${num(uA(surfaceQuantity(r)))} ${AU}` : "",
+        shows(uL(r.lf)) ? `${num(uL(r.lf))} ${LU}` : "", shows(r.ea, 0) ? `${num(r.ea, 0)} EA` : "",
       ].filter(Boolean).join(" · ");
       drawRight(qty || "-", 415, y, 9.5, font, ink);
       const net = `${c.hatch && c.hatch !== "solid" ? c.hatch + " · " : ""}perte ${r.waste_pct}% -> ${num(uA(r.total_sf_net))} ${AU}`;
@@ -468,8 +469,9 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
         if (y < 92) break;   // stop above the fixed footnote slot at y=60 — rows never collide with it
         const c = condById[r.id] || {};
         pg.drawRectangle({ x: 66, y: y - 1, width: 9, height: 7, color: rgb(...hex(c.color)), opacity: 0.8 });
-        const { floor_sf: floor, wall_sf: wall, border_sf: border, lf, ea } = roundSheetRow(r);
-        const qty = [shows(uA(floor)) ? `${num(uA(floor))} ${AU}` : "", shows(uA(wall)) ? `${num(uA(wall))} ${AU} wall` : "", shows(uA(border)) ? `${num(uA(border))} ${AU} border` : "", shows(uL(lf)) ? `${num(uL(lf))} ${LU}` : "", shows(ea, 0) ? `${num(ea, 0)} EA` : ""].filter(Boolean).join(" · ");
+        const { lf, ea } = roundSheetRow(r);
+        const surface = surfaceQuantity(r);
+        const qty = [shows(uA(surface)) ? `${num(uA(surface))} ${AU}` : "", shows(uL(lf)) ? `${num(uL(lf))} ${LU}` : "", shows(ea, 0) ? `${num(ea, 0)} EA` : ""].filter(Boolean).join(" · ");
         const label = fitLine(`${r.finish_tag}${r.multiplier > 1 ? ` ×${r.multiplier}` : ""}`, 8.5, font, 330);
         draw(label, { x: 82, y, size: 8.5, font, color: ink });
         drawRight(qty || "-", 560, y, 8.5, font, ink);
@@ -586,14 +588,15 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
   }
 
   // ── marked sheets ──────────────────────────────────────────────────────────
-  const srcDocs = new Map();   // file → PDFDocument (light-mode page copies + stitch member embeds)
-  const srcDocFor = async (file) => {
-    let src = srcDocs.get(file);
-    if (!src) { src = await PDFDocument.load(await loadPdfData(file), { ignoreEncryption: true }); srcDocs.set(file, src); }
-    return src;
-  };
+  const srcDocFor = markedSetSourceLoader(loadPdfData);
+  const rasterizedSheets = [];
   for (const sh of marked) {
+    try {
     let pg, toPage, chipRot = degrees(0), W, H;
+    const onFallback = (error) => {
+      rasterizedSheets.push({ key: sh.key, label: sh.label, reason: error?.message || String(error) });
+      console.warn(`[AnvilTrace] ${sh.label || sh.key}: rendu PDF compatible utilisé`, error);
+    };
 
     if (sh.stitch) {
       // ── composite stitch page (#200): the stitched surface as ONE page at
@@ -617,11 +620,11 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
       const plan = stitchPagePlan(members, dims);
       W = plan.extent.w; H = plan.extent.h;
       const pageW = W / RENDER_SCALE, pageH = H / RENDER_SCALE;
-      if (dark) {
+      const rasterStitch = async (destination) => {
         // one composite raster: members painted seam-clipped onto a white
         // ground (so the gap outside every member inverts to the dark stage),
         // then the whole canvas inverted ONCE — the involution stays exact.
-        const s = Math.min(RASTER_MAX / Math.max(pageW, pageH), 4);
+        const s = markedRasterScale(pageW, pageH, dark);
         const cv = document.createElement("canvas");
         cv.width = Math.ceil(pageW * s); cv.height = Math.ceil(pageH * s);
         const ctx = cv.getContext("2d");
@@ -641,27 +644,34 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
           // footprint on the composite canvas, so the raster draws 1:1
           ctx.drawImage(mc, pm.dx * k, pm.dy * k);
           ctx.restore();
+          mc.width = 0; mc.height = 0;
         }
-        invertPixels(cv);
-        const png = await doc.embedPng(cv.toDataURL("image/png"));
-        pg = doc.addPage([pageW, pageH]);
-        pg.drawImage(png, { x: 0, y: 0, width: pageW, height: pageH });
-      } else {
+        if (dark) invertPixels(cv);
+        const png = await destination.embedPng(cv.toDataURL("image/png"));
+        cv.width = 0; cv.height = 0;
+        const rasterPage = destination.addPage([pageW, pageH]);
+        rasterPage.drawImage(png, { x: 0, y: 0, width: pageW, height: pageH });
+        return rasterPage;
+      };
+      const vectorStitch = async (destination) => {
         // vector: each member's source page embedded as a form XObject whose
         // BBox is the seam box in the member's own user space and whose
         // matrix lands it at its stitch offset on the composite page —
         // rotation and viewBox offsets ride the viewport transform, exactly
         // like the plain-sheet inverse-transform path (lib/stitches
         // memberEmbed holds the math, node-tested).
-        pg = doc.addPage([pageW, pageH]);
+        const vectorPage = destination.addPage([pageW, pageH]);
         for (let i = 0; i < pages.length; i++) {
           const { m, vpR } = pages[i], pm = plan.members[i];
           const src = await srcDocFor(m.file);
           const { bbox, matrix } = memberEmbed(vpR.transform, pm, pageH, RENDER_SCALE);
-          const emb = await doc.embedPage(src.getPage(m.page - 1), bbox, matrix);
-          pg.drawPage(emb, { x: 0, y: 0 });
+          const emb = await destination.embedPage(src.getPage(m.page - 1), bbox, matrix);
+          vectorPage.drawPage(emb, { x: 0, y: 0 });
         }
-      }
+        return vectorPage;
+      };
+      pg = dark ? await rasterStitch(doc)
+        : await appendMarkedBackground(doc, { vector: vectorStitch, raster: rasterStitch, onFallback });
       // shapes ride the composite frame directly — no derotation (the stitch
       // page is unrotated by construction, like the dark raster path)
       toPage = (x, y) => [x / RENDER_SCALE, pageH - y / RENDER_SCALE];
@@ -671,28 +681,42 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
     const vpR = page.getViewport({ scale: RENDER_SCALE, rotation: pageRotation });   // the space verts are normalized to
     W = vpR.width; H = vpR.height;
 
-    if (dark) {
-      // raster → invert → image page (unrotated by construction)
+    let rasterBackground = dark;
+    const rasterSheet = async (destination) => {
+      rasterBackground = true;
+      // The PDF.js viewport includes intrinsic/user rotation and CropBox. Only
+      // the plan background is rasterized; takeoff ink stays vector below.
       const vp1 = page.getViewport({ scale: 1, rotation: pageRotation });
-      const s = Math.min(RASTER_MAX / Math.max(vp1.width, vp1.height), 4);
+      const s = markedRasterScale(vp1.width, vp1.height, dark);
       const vp = page.getViewport({ scale: s, rotation: pageRotation });
       const cv = document.createElement("canvas");
       cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
-      await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
-      invertPixels(cv);
-      const png = await doc.embedPng(cv.toDataURL("image/png"));
-      pg = doc.addPage([vp1.width, vp1.height]);
-      pg.drawImage(png, { x: 0, y: 0, width: vp1.width, height: vp1.height });
+      const ctx = cv.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      if (dark) invertPixels(cv);
+      const png = await destination.embedPng(cv.toDataURL("image/png"));
+      cv.width = 0; cv.height = 0;
+      const rasterPage = destination.addPage([vp1.width, vp1.height]);
+      rasterPage.drawImage(png, { x: 0, y: 0, width: vp1.width, height: vp1.height });
+      return rasterPage;
+    };
+    const vectorSheet = async (destination) => {
+      const src = await srcDocFor(sh.file);
+      const [copied] = await destination.copyPages(src, [sh.page - 1]);
+      const vectorPage = destination.addPage(copied);
+      vectorPage.setRotation(degrees(pageRotation));
+      return vectorPage;
+    };
+    pg = dark ? await rasterSheet(doc)
+      : await appendMarkedBackground(doc, { vector: vectorSheet, raster: rasterSheet, onFallback });
+    if (rasterBackground) {
+      const vp1 = page.getViewport({ scale: 1, rotation: pageRotation });
       const k = vp1.width / W;   // image px (at RENDER_SCALE) → page points
       toPage = (x, y) => [x * k, vp1.height - y * k];
     } else {
       // vector copy of the source page; image px → PDF user space through the
       // inverse viewport transform (rotation + viewBox offsets included)
-      let src = srcDocs.get(sh.file);
-      if (!src) { src = await PDFDocument.load(await loadPdfData(sh.file), { ignoreEncryption: true }); srcDocs.set(sh.file, src); }
-      const [copied] = await doc.copyPages(src, [sh.page - 1]);
-      pg = doc.addPage(copied);
-      pg.setRotation(degrees(pageRotation));
       const [a, b, c, d, e, f] = vpR.transform;
       const det = a * d - b * c;
       toPage = (x, y) => [(d * (x - e) - c * (y - f)) / det, (-b * (x - e) + a * (y - f)) / det];
@@ -972,6 +996,9 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
       ? `${sh.label} · assemblage (${sh.stitch.members.map((m) => m.label || m.key).join(" + ")}) · jeu annoté`
       : `${sh.label} · jeu annoté`;
     text(stamp, 14, 20, 8, muted);
+    } catch (error) {
+      throw new Error(`Feuille ${sh.label || sh.key} : ${error?.message || String(error)}`, { cause: error });
+    }
   }
 
   // small tool credit on the LAST page only — the subtle parent credit shown in
@@ -987,7 +1014,7 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
   const bytes = await doc.save();
   const base = (projectName || "").trim();
   const filename = `${base ? base + " - " : ""}jeu de plans annoté${dark ? " (sombre)" : ""}.pdf`;
-  return { bytes, filename };
+  return { bytes, filename, rasterizedSheets };
 }
 
 export function downloadBytes(filename, bytes, type = "application/pdf") {

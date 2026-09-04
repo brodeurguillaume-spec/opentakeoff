@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { moveProductToPosition } from "../src/lib/productOrder.js";
+import { moveProductToPosition, nextProductCopyName } from "../src/lib/productOrder.js";
 
 const products = () => [
   { id: "a", finish_tag: "A" },
@@ -26,4 +26,10 @@ test("unknown ids, invalid positions, and no-op moves preserve array identity", 
   assert.equal(moveProductToPosition(source, "missing", 2), source);
   assert.equal(moveProductToPosition(source, "b", "nope"), source);
   assert.equal(moveProductToPosition(source, "b", 2), source);
+});
+
+test("a Product copy gets the first free numeric suffix", () => {
+  assert.equal(nextProductCopyName("Pierre Oxford", ["Pierre Oxford"]), "Pierre Oxford 1");
+  assert.equal(nextProductCopyName("Pierre Oxford", ["pierre oxford 1", "Pierre Oxford 2"]), "Pierre Oxford 3");
+  assert.equal(nextProductCopyName("  ", []), "Produit 1");
 });

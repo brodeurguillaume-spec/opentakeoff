@@ -178,3 +178,36 @@ export function restoreCutoutSnapshot(shape, snapshot) {
   }
   return restored;
 }
+
+/**
+ * Scale receipt for rebuilding a parent after deleting one linked deduction.
+ * A Map-zone scale is carried as `effective_upp` by resolveScaleForShape; using
+ * the sheet-only upp lookup here made zone-only projects silently fall back to
+ * a plain delete and leave the old hole baked into the parent.
+ * Missing scale is still a valid zero-priced geometry state (it will reprice
+ * when scale is set); ambiguous/conflicting scale must refuse the rebuild.
+ */
+export function cutoutRebuildUpp(scaleResolution) {
+  if (scaleResolution?.status === "missing") return 0;
+  if (scaleResolution?.status !== "resolved") return null;
+  const upp = Number(scaleResolution.effective_upp);
+  return Number.isFinite(upp) && upp >= 0 ? upp : null;
+}
+
+// Fresh drawing must remove area. A pasted or moved linked copy may overlap
+// an existing hole completely; set subtraction keeps that overlap net-neutral.
+export function cutoutAreaChangeAllowed(beforeArea, afterArea, { allowNoop = false } = {}) {
+  const removed = beforeArea - afterArea;
+  return Number.isFinite(removed) && (removed > 1e-6 || (allowNoop && removed >= -1e-6));
+}
+
+// Try the familiar nudge, then the exact source location if containment or
+// local scale resolution rejects it. Never clamp vertices independently:
+// clipboard placement is a rigid translation, not a resize near a page edge.
+export function prepareLinkedCutoutPaste(vertsNorm, offset, resolveCandidate) {
+  const shifted = vertsNorm.map(([x, y]) => [x + offset, y + offset]);
+  const first = resolveCandidate(shifted);
+  if (first.cut) return { ...first, overSource: false };
+  const fallback = resolveCandidate(vertsNorm.map((point) => [...point]));
+  return { ...fallback, overSource: true };
+}

@@ -17,6 +17,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { sanitizeTemplates } from "../src/lib/templates.js";
+import { instantiateTemplate } from "../src/lib/canvasUtil.js";
 import { store } from "../src/lib/store.js";
 
 beforeEach(() => {
@@ -82,6 +83,27 @@ test("color/fill/hatch: non-string values are removed so the canvas defaults; st
 test("unknown item fields survive the round-trip (scale_source precedent)", () => {
   const saved = [{ finish_tag: "A", waste_pct: 8, future_field: { v: 1 }, materials: [{ name: "X", future_mat: true }] }];
   assert.deepEqual(sanitizeTemplates(JSON.parse(JSON.stringify(saved))), saved);
+});
+
+test("a Product template restores its TAG description report notes and category", () => {
+  const product = instantiateTemplate({
+    finish_tag: "BR1",
+    description: "Brique Rinox — Oxford Silver White",
+    report_notes: "Valider la couleur.\nJoint de 1/2 po.",
+    product_type: "brick",
+    materials: [],
+  });
+  assert.equal(product.finish_tag, "BR1");
+  assert.equal(product.description, "Brique Rinox — Oxford Silver White");
+  assert.equal(product.report_notes, "Valider la couleur.\nJoint de 1/2 po.");
+  assert.equal(product.product_type, "brick");
+});
+
+test("project annotations preserve optional product description and multiline report notes", async () => {
+  const product = { id: "notes-test", finish_tag: "BR1", description: "Brique complète", report_notes: "Vérifier au chantier\nCouleur à confirmer" };
+  const snapshot = { schema: "opentakeoff.takeoff_canvas.v1", conditions: [product], shapes: [], sheets: [] };
+  await store.saveAnnotations(snapshot);
+  assert.deepEqual((await store.loadAnnotations()).conditions, [product]);
 });
 
 // ── store.loadTemplates wiring ───────────────────────────────────────────────
